@@ -1,0 +1,341 @@
+#!/usr/bin/env node
+/**
+ * Boots the real page in headless Chromium and drives it through the whole
+ * flow with a synthetic camera.
+ *
+ * `npm test` covers the maths but cannot touch WebGL, canvas text, or the
+ * DOM wiring — and a shader that fails to compile is invisible until the page
+ * is black on a phone. This runs the actual application: it compiles the
+ * distortion and passthrough shaders, renders frames, and walks
+ * draw -> categorize -> tag -> equip using the pointer fallback.
+ *
+ *   npm run smoke          # headless
+ *   npm run smoke -- --shots   # also write PNGs to tools/shots/
+ */
+
+import { chromium } from 'playwright';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
+const PORT = 8791;
+const BASE = `http://127.0.0.1:${PORT}`;
+const SHOTS = process.argv.includes('--shots');
+const SHOT_DIR = path.join(__dirname, 'shots');
+
+let failures = 0;
+const check = (ok, label, detail = '') => {
+  if (ok) {
+    console.log(`  ok    ${label}`);
+  } else {
+    failures++;
+    console.log(`  FAIL  ${label}${detail ? `\n        ${detail}` : ''}`);
+  }
+};
+
+/**
+ * Locate a Chromium build. Prefers whatever Playwright resolves on its own,
+ * falling back to a scan of PLAYWRIGHT_BROWSERS_PATH for environments that
+ * ship a pre-installed browser under a versioned directory.
+ */
+function findChromium() {
+  try {
+    const resolved = chromium.executablePath();
+    if (resolved && fs.existsSync(resolved)) return resolved;
+  } catch {
+    /* not installed through playwright's own download */
+  }
+
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/pw-browsers';
+  if (fs.existsSync(base)) {
+    const candidates = fs
+      .readdirSync(base)
+      // headless_shell has no WebGL, so it cannot verify shaders.
+      .filter((d) => d.startsWith('chromium') && !d.includes('headless_shell'))
+      .sort()
+      .reverse()
+      .map((d) => path.join(base, d, 'chrome-linux', 'chrome'));
+    for (const c of candidates) if (fs.existsSync(c)) return c;
+  }
+  throw new Error(`No Chromium found (looked under ${base})`);
+}
+
+async function waitForServer(url, timeoutMs = 15000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return true;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`Server never came up at ${url}`);
+}
+
+async function main() {
+  // Plain HTTP on loopback: a secure context, so getUserMedia is allowed.
+  const server = spawn(process.execPath, [path.join(__dirname, 'serve.js'), '--http', '--port', String(PORT)], {
+    cwd: ROOT,
+    stdio: 'ignore',
+  });
+
+  let browser;
+  try {
+    await waitForServer(BASE);
+
+    browser = await chromium.launch({
+      // Full Chromium, not headless_shell: the shell has no WebGL.
+      executablePath: findChromium(),
+      args: [
+        // A synthetic moving test pattern stands in for the rear camera.
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
+        '--autoplay-policy=no-user-gesture-required',
+        // SwiftShader gives a real GL implementation with no GPU present, so
+        // shaders genuinely compile rather than being skipped.
+        '--use-gl=swiftshader',
+        '--enable-unsafe-swiftshader',
+        '--ignore-gpu-blocklist',
+      ],
+    });
+
+    const context = await browser.newContext({
+      viewport: { width: 900, height: 450 },
+      permissions: ['camera'],
+      deviceScaleFactor: 1,
+    });
+    const page = await context.newPage();
+
+    const consoleErrors = [];
+    const pageErrors = [];
+    const notFound = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+    page.on('response', (res) => {
+      if (res.status() === 404) notFound.push(new URL(res.url()).pathname);
+    });
+
+    console.log('\nBoot');
+    await page.goto(BASE, { waitUntil: 'load' });
+    check(await page.locator('#gate').isVisible(), 'gate screen renders');
+
+    // Hand tracking needs a CDN this sandbox cannot reach; the pointer
+    // fallback is the path under test here anyway.
+    await page.click('#gate-start');
+
+    await page.waitForFunction(
+      () => window.ARFIGHT?.running === true,
+      null,
+      { timeout: 45000 },
+    );
+    check(true, 'session starts with a fake camera');
+
+    const boot = await page.evaluate(() => ({
+      state: window.ARFIGHT.fsm.current,
+      stereo: window.ARFIGHT.renderer.stereo,
+      videoW: window.ARFIGHT.cameraFeed.width,
+      videoH: window.ARFIGHT.cameraFeed.height,
+      pointerFallback: window.ARFIGHT.hands === window.ARFIGHT.pointerHand,
+    }));
+    check(boot.videoW > 0 && boot.videoH > 0, 'camera reports a frame size',
+      `got ${boot.videoW}x${boot.videoH}`);
+    check(boot.stereo === true, 'starts in stereo headset mode');
+    check(['check', 'draw'].includes(boot.state), 'reaches an interactive state',
+      `state=${boot.state}`);
+
+    // --- Rendering actually happens, and the GL program links.
+    console.log('\nRendering');
+    await page.waitForTimeout(700);
+    const gl = await page.evaluate(() => {
+      const r = window.ARFIGHT.renderer.renderer;
+      const info = r.info;
+      return {
+        frames: info.render.frame,
+        calls: info.render.calls,
+        programs: r.info.programs?.length ?? 0,
+        contextLost: r.getContext().isContextLost(),
+      };
+    });
+    check(gl.frames > 5, 'render loop is producing frames', `frames=${gl.frames}`);
+    check(gl.calls > 0, 'draw calls are being issued', `calls=${gl.calls}`);
+    check(!gl.contextLost, 'WebGL context is healthy');
+    check(gl.programs >= 2, 'shader programs linked (passthrough + distortion)',
+      `programs=${gl.programs}`);
+
+    // Any shader that failed to compile shows up as a console error from three.
+    const shaderErrors = consoleErrors.filter((e) => /shader|glsl|program|compile/i.test(e));
+    check(shaderErrors.length === 0, 'no shader compile errors',
+      shaderErrors.join('\n        '));
+
+    if (SHOTS) {
+      fs.mkdirSync(SHOT_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(SHOT_DIR, '1-stereo.png') });
+    }
+
+    // --- Walk the flow using the pointer fallback.
+    console.log('\nFlow');
+    await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      // Force the pointer hand so the walk-through does not depend on
+      // MediaPipe being reachable.
+      app.hands = app.pointerHand;
+      app.pointerHand.visible = true;
+      if (app.fsm.current === 'check') app.fsm.go('draw');
+    });
+
+    // Draw two strokes by driving the drawing session directly. Points must be
+    // real Vector3s — the app clones and transforms them downstream.
+    const strokeCount = await page.evaluate(async () => {
+      const app = window.ARFIGHT;
+      const Vec3 = app.head.position.constructor;
+      const draw = (from, to, steps) => {
+        app.drawing.beginStroke();
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          app.drawing.addPoint(new Vec3(
+            from[0] + (to[0] - from[0]) * t,
+            from[1] + (to[1] - from[1]) * t,
+            from[2] + (to[2] - from[2]) * t,
+          ));
+        }
+        app.drawing.endStroke();
+      };
+      draw([0, -0.10, -0.5], [0, 0, -0.5], 14);   // grip
+      draw([0, 0, -0.5], [0, 0, -0.72], 26);      // barrel
+      app._refreshDrawButtons();
+      return app.drawing.strokes.length;
+    });
+    check(strokeCount === 2, 'two strokes recorded', `got ${strokeCount}`);
+
+    // Classify as a gun and tag all three anchors.
+    const tagged = await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      const Vec3 = app.head.position.constructor;
+      app._onButton('done-draw');
+      app._onButton('cat-gun');
+
+      const snap = (x, y, z) => app.drawing.nearestPoint(new Vec3(x, y, z), 0.2)?.point;
+
+      app.weapon.setAnchor('grip', snap(0, -0.10, -0.5));
+      app.weapon.setAnchor('trigger', snap(0, -0.04, -0.5));
+      app.weapon.setAnchor('muzzle', snap(0, 0, -0.72));
+      const complete = app.weapon.taggingComplete;
+      app._equipWeapon();
+
+      const forward = app.rig.getForward(new Vec3());
+      const muzzle = app.rig.getTipPosition(new Vec3());
+      return {
+        complete,
+        state: app.fsm.current,
+        category: app.weapon.category,
+        // The barrel runs along -Z, so the bore should too.
+        boreAlignment: forward.z,
+        muzzle: [muzzle.x, muzzle.y, muzzle.z],
+      };
+    });
+    check(tagged.complete, 'all three gun anchors tagged');
+    check(tagged.state === 'equip', 'reaches the equipped state', `state=${tagged.state}`);
+    check(tagged.boreAlignment < -0.95, 'bore axis follows the drawn barrel',
+      `forward.z=${tagged.boreAlignment?.toFixed(3)}`);
+
+    await page.waitForTimeout(400);
+
+    // Fire, and confirm a round is actually live in the pool.
+    const fired = await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      app.gun.fire(app.head.quaternion);
+      const live = Array.from(app.projectiles.lives).filter((l) => l > 0).length;
+      return { live, shots: app.gun.shotsFired, recoil: app.rig.recoil };
+    });
+    check(fired.live === 1, 'firing spawns a projectile', `live=${fired.live}`);
+    check(fired.recoil > 0, 'firing applies recoil');
+
+    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '2-equipped.png') });
+
+    // --- Mono toggle and resize must not break the render loop.
+    console.log('\nRobustness');
+    await page.click('#btn-stereo');
+    await page.waitForTimeout(250);
+    const mono = await page.evaluate(() => ({
+      stereo: window.ARFIGHT.renderer.stereo,
+      statusVisible: !document.getElementById('status').hidden,
+    }));
+    check(mono.stereo === false, 'stereo toggles off');
+    check(mono.statusVisible, 'status line appears in mono mode');
+
+    await page.setViewportSize({ width: 640, height: 1000 }); // portrait
+    await page.waitForTimeout(300);
+    await page.setViewportSize({ width: 1000, height: 500 }); // back to landscape
+    await page.waitForTimeout(300);
+
+    const after = await page.evaluate(() => {
+      const r = window.ARFIGHT.renderer;
+      return {
+        frames: r.renderer.info.render.frame,
+        contextLost: r.renderer.getContext().isContextLost(),
+        eyeAspect: r.eyeAspect,
+      };
+    });
+    check(after.frames > gl.frames, 'still rendering after resize',
+      `${gl.frames} -> ${after.frames}`);
+    check(!after.contextLost, 'context survived the resize');
+
+    // Start a fresh weapon: exercises teardown, which is where leaks hide.
+    await page.evaluate(() => window.ARFIGHT._startNewWeapon());
+    await page.waitForTimeout(250);
+    const restarted = await page.evaluate(() => ({
+      state: window.ARFIGHT.fsm.current,
+      strokes: window.ARFIGHT.drawing.strokes.length,
+      weapon: window.ARFIGHT.weapon,
+    }));
+    check(restarted.state === 'draw', 'restart returns to drawing');
+    check(restarted.strokes === 0, 'restart clears the sketch');
+    check(restarted.weapon === null, 'restart releases the weapon');
+
+    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '3-mono.png') });
+
+    // --- Nothing should have thrown along the way.
+    console.log('\nConsole');
+    check(pageErrors.length === 0, 'no uncaught exceptions',
+      pageErrors.join('\n        '));
+
+    // Probes for the optional local MediaPipe copy are *meant* to 404 when
+    // fetch-deps has not been run; a 404 on anything else is a broken path.
+    const expected404 = /^\/(vendor\/mediapipe\/|models\/hand_landmarker\.task|favicon\.ico)/;
+    const unexpected404 = [...new Set(notFound)].filter((p) => !expected404.test(p));
+    check(unexpected404.length === 0, 'every first-party asset resolves',
+      unexpected404.join(', '));
+
+    // A 404 surfaces as a console error too; drop those alongside the CDN
+    // failures this sandbox cannot avoid.
+    const realErrors = consoleErrors.filter(
+      (e) => !/mediapipe|jsdelivr|Failed to fetch|net::ERR|hand tracking|404 \(Not Found\)/i.test(e),
+    );
+    check(realErrors.length === 0, 'no unexpected console errors',
+      realErrors.join('\n        '));
+
+    if (notFound.length) {
+      console.log(`  note  optional assets absent (expected): ${[...new Set(notFound)].join(', ')}`);
+    }
+    console.log('  note  MediaPipe CDN is unreachable here, so the pointer fallback was exercised');
+  } finally {
+    await browser?.close();
+    server.kill();
+  }
+
+  console.log(`\n${failures === 0 ? 'smoke test passed' : `${failures} check(s) failed`}`);
+  if (SHOTS) console.log(`screenshots in ${path.relative(ROOT, SHOT_DIR)}/`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error(`\nsmoke test errored: ${err.message}`);
+  process.exit(1);
+});

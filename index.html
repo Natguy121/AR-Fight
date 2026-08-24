@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#05070d" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>AR-Fight</title>
+<link rel="stylesheet" href="./src/styles.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<!-- Passthrough source. Never displayed directly; it is uploaded as a texture
+     and fed to the hand tracker. -->
+<video id="camera-feed" playsinline muted autoplay></video>
+
+<canvas id="view"></canvas>
+
+<!-- Pre-flight screen. Camera and motion permissions must be requested from a
+     real user gesture, so everything starts behind this button. -->
+<div id="gate" class="overlay">
+  <div class="gate-card">
+    <h1>AR&#8209;Fight</h1>
+    <p class="tagline">Draw a weapon in the air. Tell it what it is. Then use it.</p>
+
+    <ol class="steps">
+      <li><b>Draw</b> &mdash; pinch thumb and index together and move your hand.</li>
+      <li><b>Classify</b> &mdash; is it a <b>gun</b> or a <b>melee</b> weapon?</li>
+      <li><b>Tag</b> &mdash; point at your drawing to mark the muzzle, trigger and
+          grip &mdash; or the grip and striking edge.</li>
+      <li><b>Fight</b> &mdash; it snaps to your hand and works.</li>
+    </ol>
+
+    <label class="toggle">
+      <input type="checkbox" id="gate-stereo" checked />
+      <span>Headset mode (side&#8209;by&#8209;side stereo)</span>
+    </label>
+    <p class="hint" id="gate-hint">
+      Leave this on if you are slotting the phone into a Cardboard/VR shell.
+      Turn it off to hold the phone like a window.
+    </p>
+
+    <button id="gate-start" type="button">Grant camera &amp; start</button>
+    <p class="error" id="gate-error" hidden></p>
+    <p class="fineprint">
+      Needs HTTPS (or localhost) for camera access. Nothing leaves the device &mdash;
+      all tracking runs locally.
+    </p>
+  </div>
+</div>
+
+<!-- Boot progress, shown while the tracker and model load. -->
+<div id="loading" class="overlay" hidden>
+  <div class="spinner" aria-hidden="true"></div>
+  <p id="loading-text">Starting camera&hellip;</p>
+</div>
+
+<!-- Persistent controls. Small, edge-anchored, so they stay clear of the
+     lenses in stereo mode. -->
+<div id="controls" hidden>
+  <button id="btn-stereo" type="button" title="Toggle headset mode">&#9673;&#9673;</button>
+  <button id="btn-recenter" type="button" title="Recentre the view and UI">&#8635;</button>
+  <button id="btn-restart" type="button" title="Start a new weapon">&#10006;</button>
+</div>
+
+<!-- Mono-mode status line. Hidden in stereo, where the world-space UI takes
+     over (DOM cannot be shown to both eyes). -->
+<div id="status" hidden></div>
+
+<noscript>
+  <div class="overlay"><div class="gate-card"><h1>AR&#8209;Fight</h1>
+  <p>This app needs JavaScript.</p></div></div>
+</noscript>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
