@@ -348,6 +348,44 @@ async function main() {
       `${gl.frames} -> ${after.frames}`);
     check(!after.contextLost, 'context survived the resize');
 
+    // --- The manual "camera looks sideways" fix: tapping it must actually
+    // change what the shader samples, and the render loop must keep running.
+    const rotate = await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      const before = app.videoRotation;
+      const wasManual = app._videoRotationManual;
+      document.getElementById('btn-fliprot').click();
+      return {
+        before,
+        after: app.videoRotation,
+        manualAfter: app._videoRotationManual,
+        wasManual,
+        frameMapRotation: app.frameMap.rotation,
+        shaderUniform: app.renderer.bgUniforms.uVideoRotation.value,
+      };
+    });
+    check(rotate.wasManual === false, 'rotation starts on the auto-guess');
+    check(rotate.after === (rotate.before + 1) % 4, 'tapping the button advances by one turn',
+      `${rotate.before} -> ${rotate.after}`);
+    check(rotate.manualAfter === true, 'tapping the button marks the choice as manual');
+    check(rotate.frameMapRotation === rotate.after, 'VideoFrameMap picks up the new rotation');
+    check(rotate.shaderUniform === rotate.after, 'the shader uniform matches it');
+
+    await page.waitForTimeout(250);
+    const afterRotate = await page.evaluate(() => ({
+      frames: window.ARFIGHT.renderer.renderer.info.render.frame,
+      contextLost: window.ARFIGHT.renderer.renderer.getContext().isContextLost(),
+    }));
+    check(afterRotate.frames > after.frames, 'still rendering after rotating the video');
+    check(!afterRotate.contextLost, 'context survived the rotation change');
+
+    // Resizing again must not silently revert the player's manual choice.
+    await page.setViewportSize({ width: 900, height: 450 });
+    await page.waitForTimeout(250);
+    const stuck = await page.evaluate(() => window.ARFIGHT.videoRotation);
+    check(stuck === rotate.after, 'the manual rotation survives a resize',
+      `expected ${rotate.after}, got ${stuck}`);
+
     // Start a fresh weapon: exercises teardown, which is where leaks hide.
     await page.evaluate(() => window.ARFIGHT._startNewWeapon());
     await page.waitForTimeout(250);

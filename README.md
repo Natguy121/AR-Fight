@@ -47,6 +47,14 @@ once (Advanced → Proceed), and allow the camera and motion sensors.
 
 Then put the phone in the headset, in **landscape**.
 
+**If the camera view looks sideways,** tap the `90°` button (top-right)
+until it's upright. Some browsers capture the camera stream once — while
+the phone was still upright to tap "start" — and keep delivering frames in
+that orientation even after you physically turn the phone into the headset.
+The app guesses a correction automatically; this button is the guaranteed
+fix on whichever phones guess wrong, and your choice sticks for the rest of
+the session.
+
 **Optional — run fully offline.** MediaPipe's runtime and hand model stream
 from public CDNs by default (~26 MB, once, then browser-cached).
 `npm run fetch-deps` downloads them into `vendor/mediapipe/` and `models/`;
@@ -101,6 +109,24 @@ exact *regardless* of how wrong the estimate of the phone's lens FOV is. A bad
 FOV guess then only changes how far away things feel — and since the weapon is
 later re-anchored to the hand using that same scale, even that error largely
 cancels. There is a test for precisely this invariant.
+
+### A camera that can be frozen sideways
+
+Some browsers capture the video stream once and keep delivering frames in
+whatever orientation the phone had *at that moment* — normally portrait,
+since that's how you hold a phone to tap "start" — even after it's physically
+turned on its side for the headset. The video itself never rotates, only the
+screen does, so both the passthrough background and every hand landmark
+(MediaPipe reads the same raw frames) end up sideways together.
+
+`VideoFrameMap` carries an explicit `rotation` (0/90/180/270°) that both the
+background shader and `unproject()` apply before anything else — the same
+single source of truth the stereo/mirroring math already relies on, so a
+correction here can never make the video and the reconstructed hand drift
+apart. There's no reliable way to *detect* which of the two 90° directions is
+right from inside the page, so the app guesses (matching video shape to
+screen shape) and the `90°` control is the guaranteed fix on the phones where
+that guess is backwards.
 
 ### The barrel is not the grip-to-muzzle line
 

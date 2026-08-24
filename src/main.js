@@ -46,6 +46,7 @@ class ARFight {
       status: document.getElementById('status'),
       btnStereo: document.getElementById('btn-stereo'),
       btnRecenter: document.getElementById('btn-recenter'),
+      btnFlipVideo: document.getElementById('btn-fliprot'),
       btnRestart: document.getElementById('btn-restart'),
     };
 
@@ -107,6 +108,11 @@ class ARFight {
     this._prevPinch = false;
     this._statusText = '';
 
+    /** Quarter turns clockwise applied to the raw camera frame; see setVideoRotation. */
+    this.videoRotation = 0;
+    /** Once true, stops the auto-heuristic from overriding the user's own choice. */
+    this._videoRotationManual = false;
+
     this._bindUI();
   }
 
@@ -126,6 +132,14 @@ class ARFight {
     });
 
     this.dom.btnRestart.addEventListener('click', () => this._startNewWeapon());
+
+    this.dom.btnFlipVideo.addEventListener('click', () => {
+      // A tap always takes over from the auto-guess: on the phones where the
+      // guess lands on the wrong one of the two 90° directions, this is the
+      // only way to actually fix it, and it should stick once chosen.
+      this._videoRotationManual = true;
+      this._setVideoRotation(this.videoRotation + 1);
+    });
 
     window.addEventListener('resize', () => this._onResize());
     screen.orientation?.addEventListener?.('change', () => {
@@ -148,9 +162,42 @@ class ARFight {
       this.frameMap.setVideoAspect(this.cameraFeed.aspect);
     }
     this.renderer.resize();
+    this._autoDetectVideoRotation();
     this.renderer.syncFrameMap();
     this.pointerHand.setStereo(this.renderer.stereo);
     this._updateOrientationGate();
+  }
+
+  /**
+   * Best-effort guess at whether the raw camera frame needs a 90° correction.
+   *
+   * Some browsers capture a stream once, while the phone is still held
+   * however it was when the camera permission was granted (normally,
+   * portrait), and keep delivering frames in that orientation even after the
+   * phone is physically turned on its side for the headset — the video
+   * itself never rotates, only the screen does. There is no API that reports
+   * this directly, so the heuristic is: once the screen is confirmed
+   * landscape (past the rotate gate), a raw video frame that is still
+   * portrait-shaped is almost certainly one of these frozen streams.
+   *
+   * This can only pick a shape match, not a direction — a 90° and a -90°
+   * frame look identically "sideways" from the aspect ratio alone. It
+   * defaults to a clockwise turn; `btn-fliprot` is the guaranteed fix on the
+   * devices where that guess is backwards, and once tapped this stops
+   * overriding the player's own choice.
+   */
+  _autoDetectVideoRotation() {
+    if (this._videoRotationManual || !this.cameraFeed.ready) return;
+    const screenLandscape = window.innerWidth > window.innerHeight;
+    if (!screenLandscape) return; // no reliable signal until past the rotate gate
+    const videoLandscape = this.cameraFeed.aspect >= 1;
+    this._setVideoRotation(videoLandscape ? 0 : 1);
+  }
+
+  _setVideoRotation(quarterTurnsClockwise) {
+    this.videoRotation = ((Math.round(quarterTurnsClockwise) % 4) + 4) % 4;
+    this.frameMap.setRotation(this.videoRotation);
+    this.renderer.syncFrameMap();
   }
 
   /**

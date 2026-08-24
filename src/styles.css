@@ -263,6 +263,9 @@ button {
 
 #controls button:active { background: rgba(90, 200, 250, 0.28); }
 
+/* "90°" is wider than the ◉◉/↻/✕ glyphs at the default size. */
+#btn-fliprot { font-size: 13px; font-weight: 600; }
+
 #status {
   position: fixed;
   z-index: 11;

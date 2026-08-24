@@ -205,6 +205,92 @@ test('cover-fit crops the wider axis', () => {
 });
 
 // ---------------------------------------------------------------------------
+group('Video rotation (frozen-orientation stream fix)');
+
+/**
+ * Mirrors `rotateToRaw` from BACKGROUND_FRAG in src/core/StereoRenderer.js.
+ * GLSL cannot run here, so this pure-JS copy is what actually gets tested —
+ * it must be the exact inverse of VideoFrameMap's own `_rotateToEffective`,
+ * or the shader and the hand-tracking reconstruction (which both consume the
+ * same rotated stream, one on the GPU and one on the CPU) drift apart the
+ * moment rotation is anything but 0: the background would show correctly
+ * rotated video while every drawn stroke landed 90/180/270 degrees off it.
+ */
+function rotateToRawGLSL(e, k) {
+  if (k === 1) return { x: e.y, y: 1 - e.x };
+  if (k === 2) return { x: 1 - e.x, y: 1 - e.y };
+  if (k === 3) return { x: 1 - e.y, y: e.x };
+  return { x: e.x, y: e.y };
+}
+
+test('the shader inverse exactly undoes VideoFrameMap for every rotation', () => {
+  const map = new VideoFrameMap();
+  const samples = [[0, 0], [1, 0], [0, 1], [1, 1], [0.5, 0.5], [0.2, 0.8], [0.73, 0.1]];
+
+  for (let k = 0; k < 4; k++) {
+    map.setRotation(k);
+    for (const [u, v] of samples) {
+      const effective = { x: 0, y: 0 };
+      map._rotateToEffective(u, v, effective);
+      const back = rotateToRawGLSL(effective, k);
+      near(back.x, u, 1e-9, `k=${k} u`);
+      near(back.y, v, 1e-9, `k=${k} v`);
+    }
+  }
+});
+
+test('a quarter turn swaps which axis the cover fit treats as wide', () => {
+  const map = new VideoFrameMap();
+  map.setVideoAspect(16 / 9); // landscape source
+  map.setDisplay(1.0, 70);    // square-ish display
+
+  map.setRotation(0);
+  near(map.effectiveAspect, 16 / 9, 1e-9, 'unrotated stays landscape');
+
+  map.setRotation(1);
+  near(map.effectiveAspect, 9 / 16, 1e-9, '90 degrees reads as portrait');
+
+  map.setRotation(2);
+  near(map.effectiveAspect, 16 / 9, 1e-9, '180 degrees stays landscape');
+
+  map.setRotation(3);
+  near(map.effectiveAspect, 9 / 16, 1e-9, '270 degrees reads as portrait');
+});
+
+test('setRotation normalises any integer into 0-3', () => {
+  const map = new VideoFrameMap();
+  map.setRotation(5);
+  assert.equal(map.rotation, 1, '5 -> 1');
+  map.setRotation(-1);
+  assert.equal(map.rotation, 3, '-1 -> 3');
+  map.setRotation(8);
+  assert.equal(map.rotation, 0, '8 -> 0');
+});
+
+test('a rotated landmark still reprojects onto the pixel it came from', () => {
+  // Same invariant as the unrotated reprojection test above, but with a 90
+  // degree correction in effect — the whole point of threading rotation
+  // through unproject() rather than patching it on separately.
+  const map = new VideoFrameMap();
+  map.setVideoAspect(16 / 9);
+  map.setDisplay(1.0, config.camera.verticalFovDeg);
+  map.setRotation(1);
+
+  const cam = new THREE.PerspectiveCamera(config.camera.verticalFovDeg, 1.0, 0.01, 100);
+  cam.updateMatrixWorld(true);
+
+  const u = 0.62;
+  const v = 0.38;
+  const expected = map.videoToNdc(u, v, new THREE.Vector2());
+
+  for (const depth of [0.2, 0.5, 1.0]) {
+    const world = map.unproject(u, v, depth).clone().project(cam);
+    near(world.x, expected.x, 1e-6, `ndc x at depth ${depth}`);
+    near(world.y, expected.y, 1e-6, `ndc y at depth ${depth}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 group('HandPose depth solver');
 
 /**

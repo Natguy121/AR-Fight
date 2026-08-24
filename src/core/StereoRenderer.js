@@ -24,16 +24,28 @@ void main() {
 
 const BACKGROUND_FRAG = /* glsl */ `
 uniform sampler2D uVideo;
-uniform vec2 uScale;      // cover-fit factors from VideoFrameMap
-uniform float uMirror;    // 1.0 when sampling a user-facing camera
+uniform vec2 uScale;        // cover-fit factors from VideoFrameMap
+uniform float uMirror;      // 1.0 when sampling a user-facing camera
 uniform float uHasVideo;
+uniform int uVideoRotation; // quarter turns CW to undo, from VideoFrameMap.rotation
 varying vec2 vNdc;
 
+// Exact inverse of VideoFrameMap._rotateToEffective — must be kept in sync
+// with it, or a rotated stream drifts out of alignment with the landmarks
+// reconstructed from the same frame.
+vec2 rotateToRaw(vec2 e, int k) {
+  if (k == 1) return vec2(e.y, 1.0 - e.x);
+  if (k == 2) return vec2(1.0 - e.x, 1.0 - e.y);
+  if (k == 3) return vec2(1.0 - e.y, e.x);
+  return e;
+}
+
 void main() {
-  vec2 uv = vec2(
+  vec2 effective = vec2(
     0.5 + vNdc.x / (2.0 * uScale.x),
     0.5 - vNdc.y / (2.0 * uScale.y)
   );
+  vec2 uv = rotateToRaw(effective, uVideoRotation);
   if (uMirror > 0.5) uv.x = 1.0 - uv.x;
 
   vec3 rgb = vec3(0.02, 0.03, 0.05);
@@ -170,6 +182,7 @@ export class StereoRenderer {
       uScale: { value: new THREE.Vector2(1, 1) },
       uMirror: { value: 0 },
       uHasVideo: { value: 0 },
+      uVideoRotation: { value: 0 },
     };
     const mat = new THREE.ShaderMaterial({
       vertexShader: BACKGROUND_VERT,
@@ -251,6 +264,7 @@ export class StereoRenderer {
   syncFrameMap() {
     this.bgUniforms.uScale.value.set(this.frameMap.scaleX, this.frameMap.scaleY);
     this.bgUniforms.uMirror.value = this.frameMap.mirrorX ? 1 : 0;
+    this.bgUniforms.uVideoRotation.value = this.frameMap.rotation;
   }
 
   /**
