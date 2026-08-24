@@ -214,11 +214,62 @@ async function main() {
     });
     check(strokeCount === 2, 'two strokes recorded', `got ${strokeCount}`);
 
+    // --- Press DONE the way a player actually does: touch the button and
+    // pinch, through WorldUI.update() itself, not by calling _onButton
+    // directly. This is the path that broke — DONE, Undo and Clear all sat
+    // out of arm's reach, so a pinch aimed at them fell through to the
+    // drawing code and started a stroke instead of pressing anything.
+    const uiPress = await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      const Vec3 = app.head.position.constructor;
+
+      // Settle the panel in front of the head, then find DONE in world space.
+      app.ui.update(1 / 60, app.head.position, app.head.quaternion, []);
+      const button = app.ui.buttons.find((b) => b.id === 'done-draw');
+      if (!button) return { error: 'done-draw button not found' };
+      const at = button.mesh.getWorldPosition(new Vec3());
+
+      const hand = { visible: true, indexTip: at.clone(), pinchPoint: at.clone(), pinching: false };
+      const strokesBefore = app.drawing.strokes.length;
+
+      // Frame 1: touching, not yet pinching — hover only.
+      const idle = app.ui.update(1 / 60, app.head.position, app.head.quaternion, [hand]);
+
+      // Frame 2: pinch closes on the button.
+      hand.pinching = true;
+      const pressed = app.ui.update(1 / 60, app.head.position, app.head.quaternion, [hand]);
+      const consumedDuringPinch = app.ui.pinchConsumed;
+
+      // Mirror what the real loop does next: state code sees the same pinch.
+      // It must be swallowed, not read as the start of a stroke.
+      app._updateDraw(hand);
+      const strokeLeaked = app.drawing.active !== null || app.drawing.strokes.length !== strokesBefore;
+
+      if (pressed) app._onButton(pressed);
+      const state = app.fsm.current;
+
+      // Frame 3: release. The latch must clear so the next real pinch draws.
+      hand.pinching = false;
+      app.ui.update(1 / 60, app.head.position, app.head.quaternion, [hand]);
+
+      return {
+        idle, pressed, consumedDuringPinch, strokeLeaked, state,
+        pinchConsumedAfterRelease: app.ui.pinchConsumed,
+      };
+    });
+    check(uiPress.idle === null, 'touching a button without pinching does not press it');
+    check(uiPress.pressed === 'done-draw', 'pinching on DONE presses it',
+      `got ${JSON.stringify(uiPress.pressed)}`);
+    check(uiPress.consumedDuringPinch === true, 'the pinch is marked consumed by the UI');
+    check(uiPress.strokeLeaked === false, 'the same pinch does not also start a stroke');
+    check(uiPress.state === 'categorize', 'DONE actually advances the flow',
+      `state=${uiPress.state}`);
+    check(uiPress.pinchConsumedAfterRelease === false, 'the latch clears once the pinch opens');
+
     // Classify as a gun and tag all three anchors.
     const tagged = await page.evaluate(() => {
       const app = window.ARFIGHT;
       const Vec3 = app.head.position.constructor;
-      app._onButton('done-draw');
       app._onButton('cat-gun');
 
       const snap = (x, y, z) => app.drawing.nearestPoint(new Vec3(x, y, z), 0.2)?.point;
@@ -272,8 +323,18 @@ async function main() {
 
     await page.setViewportSize({ width: 640, height: 1000 }); // portrait
     await page.waitForTimeout(300);
+    const portraitGate = await page.evaluate(() => ({
+      rotateGateHidden: document.getElementById('rotate-gate').hidden,
+    }));
+    check(portraitGate.rotateGateHidden === false, 'rotate gate appears when held upright');
+    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '4-rotate-gate.png') });
+
     await page.setViewportSize({ width: 1000, height: 500 }); // back to landscape
     await page.waitForTimeout(300);
+    const landscapeGate = await page.evaluate(() => ({
+      rotateGateHidden: document.getElementById('rotate-gate').hidden,
+    }));
+    check(landscapeGate.rotateGateHidden === true, 'rotate gate clears once landscape again');
 
     const after = await page.evaluate(() => {
       const r = window.ARFIGHT.renderer;

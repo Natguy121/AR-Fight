@@ -172,6 +172,49 @@ button {
   text-align: center;
 }
 
+/* -------------------------------------------------------------- rotate gate */
+
+#rotate-gate {
+  /* Above everything, including the edge controls, while it is shown. */
+  z-index: 20;
+}
+
+.rotate-card {
+  text-align: center;
+}
+
+.rotate-icon {
+  width: 56px;
+  height: 96px;
+  margin: 2px auto 24px;
+  border: 3px solid var(--fg);
+  border-radius: 12px;
+  position: relative;
+  animation: rotate-hint 2s ease-in-out infinite;
+}
+
+.rotate-icon::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg);
+  transform: translateX(-50%);
+}
+
+@keyframes rotate-hint {
+  0%, 20% { transform: rotate(0deg); }
+  55%, 80% { transform: rotate(-90deg); }
+  100% { transform: rotate(-90deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rotate-icon { animation: none; transform: rotate(-90deg); }
+}
+
 /* ---------------------------------------------------------------- loading */
 
 #loading { flex-direction: column; gap: 18px; }

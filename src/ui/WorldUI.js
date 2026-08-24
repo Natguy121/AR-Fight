@@ -242,9 +242,15 @@ export class WorldUI {
     this._raycaster = new THREE.Raycaster();
     this._hoverId = null;
     this._dwellMs = 0;
-    this._pinchLatch = false;
+    this._wasPinching = false;
     /** Progress 0..1 of the current gaze dwell, for the reticle to mirror. */
     this.dwellProgress = 0;
+    /**
+     * True from the moment a pinch presses a button until that pinch opens
+     * again. Callers read it to be sure the same pinch does not also draw a
+     * stroke or drop an anchor.
+     */
+    this.pinchConsumed = false;
 
     this._anchored = false;
     this._following = false;
@@ -289,6 +295,7 @@ export class WorldUI {
   }
 
   set visible(v) {
+    if (this.group.visible === v) return;
     this.group.visible = v;
     if (!v) {
       this._hoverId = null;
@@ -307,14 +314,36 @@ export class WorldUI {
   }
 
   /**
+   * Three ways to press a button, in priority order:
+   *
+   *   1. Touch it with a fingertip and pinch. Only reachable if the panel has
+   *      been moved within arm's length; at the default distance it is not.
+   *   2. Look at it and pinch. The primary path — the panel sits further away
+   *      than you can reach, so pointing the head is how you aim.
+   *   3. Look at it and hold. The fallback for when hand tracking is unusable,
+   *      and the reason the reticle carries a progress ring.
+   *
+   * Pinch presses require a real open-to-closed transition, so a pinch that
+   * began elsewhere (mid-stroke, say) cannot fire a button it passes over.
+   *
    * @param {number} dt
    * @param {THREE.Vector3} headPos
    * @param {THREE.Quaternion} headQuat
-   * @param {Array} hands Hand-like objects to test for poke input.
+   * @param {Array} hands Hand-like objects supplying pinch and fingertip state.
    * @returns {string|null} id of a button activated this frame.
    */
   update(dt, headPos, headQuat, hands) {
-    if (!this.group.visible) return null;
+    // Pinch bookkeeping runs even while hidden, so the latch cannot be left
+    // stuck by a panel that disappeared mid-pinch.
+    const pinching = this._anyPinching(hands);
+    const freshPinch = pinching && !this._wasPinching;
+    this._wasPinching = pinching;
+    if (!pinching) this.pinchConsumed = false;
+
+    if (!this.group.visible) {
+      this._resetDwell();
+      return null;
+    }
 
     this._follow(dt, headPos, headQuat);
     this.group.updateMatrixWorld(true);
@@ -324,23 +353,18 @@ export class WorldUI {
       return null;
     }
 
-    // --- Direct touch wins over gaze: it is a deliberate, faster action.
+    // --- 1. Direct touch.
     const poked = this._testHands(hands);
     if (poked) {
-      if (poked.pinching && !this._pinchLatch) {
-        this._pinchLatch = true;
-        this._resetDwell();
-        return poked.button.id;
-      }
-      if (!poked.pinching) this._pinchLatch = false;
-
-      this._setHover(poked.button.id, 0);
+      this._hoverId = poked.button.id;
+      this._dwellMs = 0;
       this.dwellProgress = 0;
+      this._setHover(poked.button.id, 0);
+      if (freshPinch) return this._activate(poked.button.id, true);
       return null;
     }
-    this._pinchLatch = false;
 
-    // --- Gaze dwell.
+    // --- 2 & 3. Gaze.
     _forward.set(0, 0, -1).applyQuaternion(headQuat);
     this._raycaster.set(headPos, _forward);
     const hits = this._raycaster.intersectObjects(
@@ -362,24 +386,47 @@ export class WorldUI {
     this.dwellProgress = Math.min(1, this._dwellMs / config.ui.gazeDwellMs);
     this._setHover(hit.id, this.dwellProgress);
 
+    // Pinch confirms what you are looking at, once the gaze has settled.
+    if (freshPinch && this._dwellMs >= config.ui.pinchArmMs) {
+      return this._activate(hit.id, true);
+    }
+
     if (this._dwellMs >= config.ui.gazeDwellMs) {
-      this._resetDwell();
-      return hit.id;
+      return this._activate(hit.id, false);
     }
     return null;
   }
 
-  /** Fingertip inside a button's rect and close to its plane. */
+  _activate(id, viaPinch) {
+    if (viaPinch) this.pinchConsumed = true;
+    this._resetDwell();
+    return id;
+  }
+
+  _anyPinching(hands) {
+    for (const hand of hands) {
+      if (hand?.visible && hand.pinching) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Is a fingertip — or the point where a pinch closes — inside a button's
+   * rect and close to its plane?
+   */
   _testHands(hands) {
     for (const hand of hands) {
       if (!hand?.visible) continue;
       for (const button of this.buttons) {
-        _local.copy(hand.indexTip);
-        button.mesh.worldToLocal(_local);
-        if (Math.abs(_local.z) > 0.06) continue;
-        if (Math.abs(_local.x) > button.widthM * 0.5) continue;
-        if (Math.abs(_local.y) > button.heightM * 0.5) continue;
-        return { button, pinching: hand.pinching };
+        for (const probe of [hand.indexTip, hand.pinchPoint]) {
+          if (!probe) continue;
+          _local.copy(probe);
+          button.mesh.worldToLocal(_local);
+          if (Math.abs(_local.z) > 0.06) continue;
+          if (Math.abs(_local.x) > button.widthM * 0.5) continue;
+          if (Math.abs(_local.y) > button.heightM * 0.5) continue;
+          return { button, pinching: hand.pinching };
+        }
       }
     }
     return null;

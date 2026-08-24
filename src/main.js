@@ -41,6 +41,7 @@ class ARFight {
       gateError: document.getElementById('gate-error'),
       loading: document.getElementById('loading'),
       loadingText: document.getElementById('loading-text'),
+      rotateGate: document.getElementById('rotate-gate'),
       controls: document.getElementById('controls'),
       status: document.getElementById('status'),
       btnStereo: document.getElementById('btn-stereo'),
@@ -139,9 +140,30 @@ class ARFight {
   }
 
   _onResize() {
+    // Re-read video dimensions defensively: some browsers renegotiate the
+    // stream's reported orientation as the device rotates, and a stale
+    // videoAspect here is exactly what turns cover-fit into an extreme,
+    // disorienting crop.
+    if (this.cameraFeed.ready) {
+      this.frameMap.setVideoAspect(this.cameraFeed.aspect);
+    }
     this.renderer.resize();
     this.renderer.syncFrameMap();
     this.pointerHand.setStereo(this.renderer.stereo);
+    this._updateOrientationGate();
+  }
+
+  /**
+   * The camera feed is landscape and the app only makes sense held the same
+   * way the headset shell holds it — landscape. Cover-fitting a landscape
+   * video onto a portrait screen crops it down to a sliver, which reads as
+   * "the camera is broken" rather than "turn the phone". Block on that
+   * explicitly instead of rendering the crop.
+   */
+  _updateOrientationGate() {
+    if (!this.running) return;
+    const portrait = window.innerHeight > window.innerWidth;
+    this.dom.rotateGate.hidden = !portrait;
   }
 
   _setStereo(on) {
@@ -199,6 +221,7 @@ class ARFight {
       this._lastFrameMs = performance.now();
       this.head.update();
       this.ui.recenter(this.head.position, this.head.quaternion);
+      this._updateOrientationGate();
 
       // `go` fires the state-change callback, which builds the first screen.
       this.fsm.go(ok ? State.CHECK : State.DRAW, true);
@@ -246,19 +269,19 @@ class ARFight {
 
     const hand = this.hands.primary;
 
-    this._updateState(dt, nowMs, hand);
-
-    // World UI is suppressed while actively drawing, so panels never sit
-    // between the player and the mark they are making.
-    const uiActive = this.ui.visible;
-    const activated = uiActive
-      ? this.ui.update(dt, this.head.position, this.head.quaternion, this.hands.hands)
-      : null;
+    // The UI gets first look at the hands. A pinch aimed at a button has to be
+    // claimed here, before the drawing and tagging code would read the same
+    // pinch as a stroke or an anchor.
+    const activated = this.ui.update(
+      dt, this.head.position, this.head.quaternion, this.hands.hands,
+    );
     if (activated) this._onButton(activated);
+
+    this._updateState(dt, nowMs, hand);
 
     this.renderer.updateCameras(this.head.position, this.head.quaternion);
     this.reticle.update(this.head.position, this.head.quaternion, this.ui.dwellProgress);
-    this.reticle.setVisible(uiActive && this.ui.buttons.length > 0);
+    this.reticle.setVisible(this.ui.visible && this.ui.buttons.length > 0);
 
     this.drawing.update();
     this.targets.update(dt);
@@ -367,7 +390,8 @@ class ARFight {
    */
   _updateCheck(hand) {
     const pinching = !!hand?.visible && hand.pinching;
-    const edge = pinching && !this._prevPinch;
+    // A pinch spent on the Skip button is not a calibration sample.
+    const edge = pinching && !this._prevPinch && !this.ui.pinchConsumed;
     this._prevPinch = pinching;
 
     if (hand?.visible) {
@@ -398,23 +422,26 @@ class ARFight {
 
   _updateDraw(hand) {
     const pinching = !!hand?.visible && hand.pinching;
+    // A pinch the UI has already claimed as a button press must not also lay
+    // down a stroke — otherwise pressing DONE scribbles on the way out.
+    const drawing = pinching && !this.ui.pinchConsumed;
 
-    if (pinching && !this._prevPinch) {
+    if (drawing && !this.drawing.active) {
       this.drawing.beginStroke();
       this.sound.tick();
     }
 
-    if (pinching && this.drawing.active) {
+    if (drawing) {
       this.drawing.addPoint(hand.pinchPoint);
-    }
-
-    if (!pinching && this._prevPinch) {
+    } else if (this.drawing.active) {
       this.drawing.endStroke();
       this._refreshDrawButtons();
     }
 
-    // Hide the panel while a stroke is live so it cannot occlude the drawing.
-    this.ui.visible = !pinching;
+    // Hide the panel only while a stroke is actually live, so it cannot sit
+    // between you and the mark you are making. Hiding it on any pinch would
+    // also stop the UI seeing the pinch meant to press a button.
+    this.ui.visible = !this.drawing.active;
     this._prevPinch = pinching;
   }
 
@@ -447,7 +474,9 @@ class ARFight {
     if (!spec) return;
 
     const pinching = !!hand?.visible && hand.pinching;
-    const edge = pinching && !this._prevPinch;
+    // Ignore a pinch the UI claimed, so pressing Undo cannot also drop an
+    // anchor wherever the other hand happened to be pointing.
+    const edge = pinching && !this._prevPinch && !this.ui.pinchConsumed;
     this._prevPinch = pinching;
 
     let snapped = null;

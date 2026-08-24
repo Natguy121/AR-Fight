@@ -64,6 +64,21 @@
   <p id="loading-text">Starting camera&hellip;</p>
 </div>
 
+<!-- Shown whenever the phone is held upright during a session. The camera
+     feed is landscape; cover-fitting it to a portrait screen crops it down
+     to a tiny, wildly zoomed-in sliver, so gameplay is blocked until the
+     phone matches the orientation it will have in the headset shell. -->
+<div id="rotate-gate" class="overlay" hidden>
+  <div class="gate-card rotate-card">
+    <div class="rotate-icon" aria-hidden="true"></div>
+    <h1>Rotate to landscape</h1>
+    <p class="tagline">
+      AR&#8209;Fight is built for a phone on its side &mdash; the same way it
+      sits in a headset shell.
+    </p>
+  </div>
+</div>
+
 <!-- Persistent controls. Small, edge-anchored, so they stay clear of the
      lenses in stereo mode. -->
 <div id="controls" hidden>
