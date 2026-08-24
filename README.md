@@ -45,7 +45,16 @@ once (Advanced → Proceed), and allow the camera and motion sensors.
   network: https://192.168.1.42:8443/   <- open this on the phone
 ```
 
-Then put the phone in the headset, in **landscape**.
+Then put the phone in the headset, in **landscape**. On supporting browsers
+(mainly Android Chrome) the app requests fullscreen and locks the screen to
+landscape automatically when you tap "Grant camera & start", which — unlike
+anything else on the page — can override the phone's own rotation-lock
+toggle. Where that isn't supported (all of iOS Safari; Apple does not expose
+this to web pages), or if the whole display still looks like it needs a
+physical turn to view right, check that **rotation lock** is off: the round
+padlock in iOS Control Centre, or the auto-rotate toggle in Android's quick
+settings. With it on, nothing on the page — ours or anyone else's — can make
+the screen actually rotate.
 
 **If the camera view looks sideways,** tap the `90°` button (top-right)
 until it's upright. Some browsers capture the camera stream once — while
@@ -263,6 +272,10 @@ leave the phone; there is no backend to send them to.
   a background the same colour as your hands.
 - `deviceorientation` yaw drifts on devices without a compass. Press `↻` to
   recentre.
+- **iOS cannot be forced into landscape from the page.** The Screen
+  Orientation Lock API that does this on Android simply isn't implemented in
+  Safari — Apple's choice, not something fixable here. On iPhone, the phone's
+  own rotation-lock toggle being off is a hard requirement, not a suggestion.
 
 ## Licence
 

@@ -150,6 +150,25 @@ async function main() {
     check(['check', 'draw'].includes(boot.state), 'reaches an interactive state',
       `state=${boot.state}`);
 
+    // --- The fullscreen+orientation-lock attempt from start() must never be
+    // able to break the session — headless Chromium, and plenty of real
+    // browsers (all of iOS Safari), reject or lack this outright, and that
+    // has to be an invisible no-op, not a startup failure.
+    const forceLandscape = await page.evaluate(async () => {
+      const app = window.ARFIGHT;
+      if (typeof app._tryForceLandscape !== 'function') return { error: 'method missing' };
+      let threw = null;
+      try {
+        await app._tryForceLandscape();
+      } catch (err) {
+        threw = err?.message || String(err);
+      }
+      return { threw, stillRunning: app.running === true };
+    });
+    check(forceLandscape.threw === null, 'force-landscape attempt never throws to its caller',
+      `threw: ${forceLandscape.threw}`);
+    check(forceLandscape.stillRunning, 'session is unaffected whether or not it succeeded');
+
     // --- Rendering actually happens, and the GL program links.
     console.log('\nRendering');
     await page.waitForTimeout(700);

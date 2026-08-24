@@ -220,9 +220,47 @@ class ARFight {
     this.dom.status.hidden = on || !this._statusText;
   }
 
+  /**
+   * Best-effort: go fullscreen and lock the screen to landscape.
+   *
+   * The Orientation Lock API only works inside a fullscreen element on
+   * browsers that implement it at all (mainly Chromium-based Android
+   * browsers) — Fullscreen has to be requested and settled first, or the
+   * lock call rejects outright. iOS Safari does not implement orientation
+   * locking for web content under any circumstances (an Apple platform
+   * policy, not a bug here), so on iPhone this silently does nothing and the
+   * rotate-gate plus the phone's own rotation-lock toggle are the only path.
+   */
+  async _tryForceLandscape() {
+    try {
+      const el = document.documentElement;
+      if (el.requestFullscreen && !document.fullscreenElement) {
+        await el.requestFullscreen({ navigationUI: 'hide' });
+      }
+      await screen.orientation?.lock?.('landscape');
+    } catch (err) {
+      // Expected almost everywhere: iOS Safari has no orientation lock at
+      // all, and a browser can reject fullscreen for its own reasons (e.g.
+      // already denied once this session). Either way, gameplay does not
+      // depend on this succeeding.
+      console.info('[AR-Fight] Could not force landscape (falling back to manual rotation):', err?.message || err);
+    }
+  }
+
   async start() {
     this.dom.gateStart.disabled = true;
     this.dom.gateError.hidden = true;
+
+    // Fired first and not awaited: Fullscreen + Orientation Lock both need a
+    // fresh user gesture, which this click is, and every await below spends a
+    // little of that window. This is also the one thing in this whole app
+    // that can make the page ignore the phone's rotation-lock toggle — most
+    // "I have to physically fight the screen to see it right" reports turn
+    // out to be exactly that toggle, and unlike our own code there is no way
+    // to detect it from the page, only to route around it. Best-effort:
+    // unsupported on iOS Safari entirely, and requires user permission on
+    // some Android builds, so this silently no-ops rather than blocking.
+    this._tryForceLandscape();
 
     try {
       this.sound.init();
