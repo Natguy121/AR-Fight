@@ -59,11 +59,16 @@ void main() {
  * magnifier introduces. The eye cameras render wider than the lens shows so
  * there is real image to sample out there rather than black.
  *
- * The polynomial is normalised by its value at r = 1 so the edge of each half
- * viewport maps to the edge of the rendered image. Without that, the corners
- * sample well outside the frame and a third of the display is wasted on black
- * while the useful image shrinks into the middle. `uK` still sets how strongly
- * the image curves; this only fixes how much of the panel it fills.
+ * The polynomial must stay exactly 1 at r = 0: screen centre has to sample
+ * source centre with no scaling, or the whole image magnifies uniformly. An
+ * earlier version divided the curve by its value at r = 1 to make the corners
+ * sample inside the frame instead of going black there — but that division
+ * applies at every radius, including zero, so it also pulled the *centre*
+ * in to about 77% of its true radius: a ~1.3x zoom across the entire view,
+ * worst exactly where you're looking. Some black in the extreme corners at a
+ * strong `uK` is the correct trade-off instead — a round vignette outside the
+ * lens's clear aperture, which is normal for a Cardboard-style viewer, not a
+ * bug to warp the image to hide.
  */
 const DISTORT_FRAG = /* glsl */ `
 uniform sampler2D tScene;
@@ -93,9 +98,7 @@ void main() {
   d.x *= uAspect;                       // isotropic radius
   float r2 = dot(d, d);
 
-  // Normalise so r = 1 maps to r = 1; keeps the image filling the lens.
-  float edge = 1.0 + uK.x + uK.y;
-  vec2 s = d * ((1.0 + uK.x * r2 + uK.y * r2 * r2) / edge);
+  vec2 s = d * (1.0 + uK.x * r2 + uK.y * r2 * r2);
 
   s.x /= uAspect;
   s += vec2(cx, 0.0);

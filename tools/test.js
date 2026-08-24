@@ -114,6 +114,40 @@ test('OneEuroFilter converges on a constant signal', () => {
 });
 
 // ---------------------------------------------------------------------------
+group('Barrel distortion (StereoRenderer)');
+
+/**
+ * Mirrors the radial sample factor computed in DISTORT_FRAG
+ * (src/core/StereoRenderer.js): `s = d * (1 + k1 r^2 + k2 r^4)`. GLSL cannot
+ * run here, so this pure-JS copy is what actually gets tested — if the two
+ * drift apart, re-sync this from the shader source.
+ */
+function distortionFactor(r, k1, k2) {
+  const r2 = r * r;
+  return 1 + k1 * r2 + k2 * r2 * r2;
+}
+
+test('distortion is the identity at screen centre', () => {
+  const { distortionK1: k1, distortionK2: k2 } = config.stereo;
+  // This is the whole invariant: r=0 must sample r=0. A shader that scales
+  // this away from 1 magnifies (or shrinks) the entire view uniformly, worst
+  // exactly where the user is looking — a bug shipped once already, when an
+  // edge-fill normalisation divided the whole curve by its r=1 value and
+  // dragged the centre down to ~0.77, i.e. a ~1.3x zoom across the screen.
+  near(distortionFactor(0, k1, k2), 1, 1e-9, 'factor(0)');
+});
+
+test('distortion factor increases monotonically outward', () => {
+  const { distortionK1: k1, distortionK2: k2 } = config.stereo;
+  let prev = distortionFactor(0, k1, k2);
+  for (let r = 0.05; r <= 1.5; r += 0.05) {
+    const f = distortionFactor(r, k1, k2);
+    assert.ok(f >= prev - 1e-9, `factor should not decrease outward (r=${r})`);
+    prev = f;
+  }
+});
+
+// ---------------------------------------------------------------------------
 group('VideoFrameMap');
 
 /** Video wider than the eye viewport, and matched FOVs: reconstruction is exact. */
