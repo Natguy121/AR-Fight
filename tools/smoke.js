@@ -233,6 +233,51 @@ async function main() {
     });
     check(strokeCount === 2, 'two strokes recorded', `got ${strokeCount}`);
 
+    // --- Gaze+pinch must fire the instant a pinch lands while looking at a
+    // button, not after some minimum dwell first — the panel sits further
+    // away than an arm reaches, so this is the primary way to press
+    // anything, and a pinch that arrives before a dwell timer elapses used
+    // to go unclaimed by the UI entirely, falling through to the draw code
+    // as an ordinary stroke-starting pinch instead of pressing the button
+    // being looked at.
+    const gazePress = await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      const Vec3 = app.head.position.constructor;
+      const Quat = app.head.quaternion.constructor;
+
+      app.ui.update(1 / 60, app.head.position, app.head.quaternion, []);
+      const button = app.ui.buttons[0];
+      if (!button) return { error: 'no buttons available' };
+      const at = button.mesh.getWorldPosition(new Vec3());
+
+      // Aim the head straight at the button; the hand stays far from it, so
+      // this can only reach the gaze path, never direct touch.
+      const dir = at.clone().sub(app.head.position).normalize();
+      const quat = new Quat().setFromUnitVectors(new Vec3(0, 0, -1), dir);
+      const farAway = new Vec3(5, 5, 5);
+      const hand = { visible: true, indexTip: farAway, pinchPoint: farAway, pinching: false };
+      const strokesBefore = app.drawing.strokes.length;
+
+      // Frame 1: gaze lands on the button, not pinching yet — zero dwell so far.
+      app.ui.update(1 / 60, app.head.position, quat, [hand]);
+
+      // Frame 2: pinch closes on the very next frame, well before any dwell
+      // timer could have elapsed.
+      hand.pinching = true;
+      const pressed = app.ui.update(1 / 60, app.head.position, quat, [hand]);
+      const consumed = app.ui.pinchConsumed;
+
+      app._updateDraw(hand);
+      const strokeLeaked = app.drawing.active !== null || app.drawing.strokes.length !== strokesBefore;
+
+      return { pressed, consumed, strokeLeaked, buttonId: button.id };
+    });
+    check(gazePress.pressed === gazePress.buttonId,
+      'gaze+pinch fires the instant the pinch lands, no minimum dwell required',
+      `got ${JSON.stringify(gazePress)}`);
+    check(gazePress.consumed === true, 'a same-frame gaze+pinch is marked consumed by the UI');
+    check(gazePress.strokeLeaked === false, 'a same-frame gaze+pinch does not leak through to drawing');
+
     // --- Press DONE the way a player actually does: touch the button and
     // pinch, through WorldUI.update() itself, not by calling _onButton
     // directly. This is the path that broke — DONE, Undo and Clear all sat

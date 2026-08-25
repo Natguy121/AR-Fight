@@ -382,14 +382,22 @@ export class WorldUI {
       this._hoverId = hit.id;
       this._dwellMs = 0;
     }
+
+    // A pinch confirms whatever you are currently looking at, immediately —
+    // aiming with your head and confirming with a pinch is already a single
+    // deliberate action, the same as touching a button directly (which has
+    // no dwell requirement either). Gating this on a minimum dwell first
+    // left a window where a pinch that landed before that timer elapsed was
+    // never claimed by the UI at all, so it fell through to the draw/tag
+    // code as an ordinary pinch instead of pressing the button you were
+    // looking at — exactly the "pressing DONE still draws" bug this fixes.
+    if (freshPinch) {
+      return this._activate(hit.id, true);
+    }
+
     this._dwellMs += dt * 1000;
     this.dwellProgress = Math.min(1, this._dwellMs / config.ui.gazeDwellMs);
     this._setHover(hit.id, this.dwellProgress);
-
-    // Pinch confirms what you are looking at, once the gaze has settled.
-    if (freshPinch && this._dwellMs >= config.ui.pinchArmMs) {
-      return this._activate(hit.id, true);
-    }
 
     if (this._dwellMs >= config.ui.gazeDwellMs) {
       return this._activate(hit.id, false);

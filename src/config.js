@@ -208,16 +208,6 @@ export const config = {
     buttonsOffsetY: -0.30,
     /** Gaze must dwell this long (ms) on a button to activate it. */
     gazeDwellMs: 1100,
-    /**
-     * Look at a button and pinch to press it immediately, without waiting out
-     * the dwell. The panel floats further away than an arm reaches, so this —
-     * not poking — is the primary way to press something.
-     *
-     * The gaze must have settled on the button for this long first, otherwise
-     * a pinch aimed at drawing would fire whatever the eyes happened to sweep
-     * past on the way.
-     */
-    pinchArmMs: 280,
     /** Pixels per metre when rasterising panel text to a canvas texture. */
     pixelsPerMeter: 900,
   },
