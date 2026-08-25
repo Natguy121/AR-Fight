@@ -143,9 +143,22 @@ export class HeadTracker {
     window.addEventListener('orientationchange', this._onScreenChange);
     screen.orientation?.addEventListener?.('change', this._onScreenChange);
 
-    // `deviceorientationabsolute` is compass-referenced where available, which
-    // keeps world yaw stable; plain `deviceorientation` drifts but is universal.
-    window.addEventListener('deviceorientationabsolute', this._onOrientation, true);
+    // `deviceorientationabsolute` is compass-referenced, which keeps world
+    // yaw from drifting — but on Android Chrome it specifically requests the
+    // magnetometer-fused "rotation vector" sensor, which is exactly as
+    // reliable as the local magnetic field, i.e. not very, anywhere near
+    // motors, speakers, or other electronics (a routine environment for a
+    // demo, not a rare edge case) — readings can swing tens of degrees in a
+    // couple of frames while the phone itself sits dead still, which reads
+    // as violent, erratic shaking in anything world-locked. Plain
+    // `deviceorientation` uses the gyroscope+accelerometer-only "game
+    // rotation vector" instead: no compass, so yaw drifts slowly over a
+    // session, but immune to this. Recentre (the UI button) already exists
+    // specifically to correct drift, which is a far smaller cost than
+    // unpredictable interference — so this is opt-in, off by default.
+    if (config.head.useCompass) {
+      window.addEventListener('deviceorientationabsolute', this._onOrientation, true);
+    }
     window.addEventListener('deviceorientation', this._onOrientation, true);
 
     // If no sensor event lands shortly, assume there is none.

@@ -46,6 +46,21 @@ export const config = {
       beta: 0.6,
       dCutoff: 1.0,
     },
+    /**
+     * Also listen for `deviceorientationabsolute` (compass-referenced yaw,
+     * via the magnetometer) alongside plain `deviceorientation`. Off by
+     * default: on Android Chrome this specifically requests the
+     * magnetometer-fused rotation-vector sensor, which near motors, wiring,
+     * or other electronics can swing by tens of degrees within a couple of
+     * frames while the phone sits physically still — reading as violent
+     * shaking in anything world-locked, confirmed by comparing against the
+     * (unaffected, since it does not touch this sensor) passthrough video
+     * in the same recording. Gyroscope-only orientation trades that for
+     * slow yaw drift over a session, which the recentre button already
+     * exists to correct — turn this back on for a session that will run
+     * long enough for drift to matter more than that risk.
+     */
+    useCompass: false,
   },
 
   /** Stereo output: the phone in a Cardboard-style shell. */

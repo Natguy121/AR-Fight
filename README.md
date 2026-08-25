@@ -270,7 +270,12 @@ leave the phone; there is no backend to send them to.
   working range is arm's length, which is where you draw anyway.
 - **Bright, even light helps.** Hand tracking struggles in the dark or against
   a background the same colour as your hands.
-- `deviceorientation` yaw drifts on devices without a compass. Press `↻` to
+- **Yaw drifts slowly over a session.** `HeadTracker` deliberately does not
+  use the compass (`config.head.useCompass`, off by default) — near motors,
+  wiring, or other electronics, compass-referenced orientation can swing
+  tens of degrees within a couple of frames while the phone sits physically
+  still, which reads as violent shaking in anything world-locked. Gyroscope-
+  only orientation avoids that at the cost of slow drift; press `↻` to
   recentre.
 - **iOS cannot be forced into landscape from the page.** The Screen
   Orientation Lock API that does this on Android simply isn't implemented in
