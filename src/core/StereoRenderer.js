@@ -88,6 +88,7 @@ uniform float uStereo;
 uniform vec2 uK;
 uniform float uLensShift;
 uniform float uAspect;
+uniform float uGutter;
 varying vec2 vUv;
 
 void main() {
@@ -101,6 +102,27 @@ void main() {
 
   // Coordinates within this eye's half viewport, in [-1, 1].
   vec2 e = vec2(vUv.x * 2.0 - eye, vUv.y);
+
+  // Guaranteed black gutter at the boundary between the two eyes,
+  // independent of wherever the barrel-distortion vignette below happens to
+  // fall. That vignette's own black-out is normally what keeps the eyes
+  // visually separate, but its extent is a function of exactly where the
+  // barrel curve pushes a sample out of [-1, 1] — at some combinations of
+  // resolution and GPU/driver this reaches (or very nearly reaches) the
+  // shared boundary at the widest point of each eye's oval, letting the two
+  // eyes' content touch or bleed into each other, which reads as one fused
+  // image rather than two. This margin makes the separation exact and does
+  // not depend on that computation landing any particular way — the cost is
+  // a sliver less image right at the centre, which was already the part
+  // nearest each lens's own inner edge.
+  if (uGutter > 0.0) {
+    bool nearBoundary = (eye < 0.5) ? (e.x > 1.0 - uGutter) : (e.x < uGutter);
+    if (nearBoundary) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+      return;
+    }
+  }
+
   vec2 c = e * 2.0 - 1.0;
 
   // Positive uLensShift pushes each eye's image outward, under its lens.
@@ -169,7 +191,6 @@ export class StereoRenderer {
     });
 
     this.size = new THREE.Vector2(2, 2);
-    this._drawingBuffer = new THREE.Vector2(2, 2);
     this.eyeAspect = 1;
     this.resize();
   }
@@ -205,6 +226,7 @@ export class StereoRenderer {
       uK: { value: new THREE.Vector2(config.stereo.distortionK1, config.stereo.distortionK2) },
       uLensShift: { value: config.stereo.lensCenterOffset },
       uAspect: { value: 1 },
+      uGutter: { value: config.stereo.eyeGutter },
     };
     const mat = new THREE.ShaderMaterial({
       vertexShader: DISTORT_VERT,
@@ -270,6 +292,20 @@ export class StereoRenderer {
     this.target.setSize(bufW, bufH);
     this.size.set(bufW, bufH);
 
+    // THREE's own setViewport/setScissor take *logical* (CSS) pixels and
+    // multiply by the renderer's pixel ratio internally — passing them the
+    // already-device-pixel values in `this.size` double-applies that ratio,
+    // inflating the viewport to `pixelRatio`x too large. At pixelRatio 1
+    // that's a no-op, which is exactly why this went unnoticed until tested
+    // above the renderer's own dpr clamp: only the fraction 1/pixelRatio of
+    // the frame then actually lands inside the real drawing buffer, which
+    // is indistinguishable from "the stereo split isn't happening" on
+    // screen. Kept alongside `this.size` (device pixels, for buffer/target
+    // sizing) rather than replacing it, since render() needs both.
+    this._cssW = w;
+    this._cssH = h;
+    this._renderScale = scale;
+
     // Stereo in a phone headset is always landscape: eyes side-by-side (left-right).
     // Even if the screen reports portrait dimensions (e.g., rotation locked before
     // launch), the Cardboard layout requires horizontal split. eyeAspect is the
@@ -324,7 +360,14 @@ export class StereoRenderer {
   /** @param {THREE.Scene} scene */
   render(scene) {
     const r = this.renderer;
-    const { x: w, y: h } = this.size;
+
+    // setViewport/setScissor take *logical* pixels (THREE multiplies by the
+    // renderer's own pixel ratio internally) — this must be the CSS size
+    // scaled by renderScale, matching how the offscreen target's *actual*
+    // device-pixel size (this.size, in resize()) was derived, or the two
+    // disagree by a factor of the pixel ratio. See the comment in resize().
+    const w = this._cssW * this._renderScale;
+    const h = this._cssH * this._renderScale;
 
     r.setRenderTarget(this.target);
     r.setScissorTest(true);
@@ -351,10 +394,10 @@ export class StereoRenderer {
     r.setScissorTest(false);
     r.setRenderTarget(null);
 
-    // The canvas buffer is not the same size as the offscreen target whenever
-    // renderScale != 1, so the final pass gets its own viewport.
-    r.getDrawingBufferSize(this._drawingBuffer);
-    r.setViewport(0, 0, this._drawingBuffer.x, this._drawingBuffer.y);
+    // The canvas's own drawing buffer doesn't go through renderScale (only
+    // the offscreen target does), so this is plain CSS size — again logical
+    // pixels, for the same reason as above.
+    r.setViewport(0, 0, this._cssW, this._cssH);
     r.clear(true, true, true);
 
     this.postUniforms.tScene.value = this.target.texture;

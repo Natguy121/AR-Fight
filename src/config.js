@@ -45,6 +45,20 @@ export const config = {
     msaaSamples: 4,
     /** Vertical FOV of each eye camera in degrees. */
     eyeFovDeg: 72,
+    /**
+     * Forced-black margin at the boundary between the two eyes, in
+     * normalised half-screen units (0.03 = 3% of one eye's own width).
+     * The barrel-distortion vignette is normally what keeps the two eyes
+     * visually apart on its own, by going black wherever it samples outside
+     * the rendered frame — but exactly how close that gets to the shared
+     * boundary depends on the resolution and GPU driver, and at some
+     * combinations it reaches (or nearly reaches) the boundary itself,
+     * letting the two eyes bleed into what reads as one fused image. This
+     * guarantees the separation regardless, at the cost of a sliver of
+     * image right at the centre — already the least useful part of the
+     * frame, being nearest each lens's own inner edge. 0 disables it.
+     */
+    eyeGutter: 0.03,
   },
 
   /** Hand tracking. */
