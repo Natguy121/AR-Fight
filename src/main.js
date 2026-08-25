@@ -187,12 +187,18 @@ class ARFight {
 
     const d = this.head.getDebugInfo();
     const fmt = (n) => (Number.isFinite(n) ? n.toFixed(1) : 'n/a');
+    const r = this.renderer;
+    const bufW = Math.round(r.size.x);
+    const bufH = Math.round(r.size.y);
+    const eyeW = r.stereo ? Math.round(bufW / 2) : bufW;
     el.textContent =
       `sensor: ${d.hasSensor ? 'yes' : 'no'}  pointerFallback: ${d.usingPointerFallback}\n` +
       `alpha ${fmt(d.alphaDeg)}  beta ${fmt(d.betaDeg)}  gamma ${fmt(d.gammaDeg)}\n` +
       `orientation.angle: ${fmt(d.reportedAngleDeg)}  type: ${d.orientationType}\n` +
       `screenAngle (used): ${fmt(d.screenAngleDeg)}\n` +
-      `innerWidth x innerHeight: ${window.innerWidth} x ${window.innerHeight}`;
+      `innerWidth x innerHeight: ${window.innerWidth} x ${window.innerHeight}\n` +
+      `stereo: ${r.stereo}   drawBuffer: ${bufW}x${bufH}\n` +
+      `per-eye viewport: ${eyeW}x${bufH}   eyeAspect: ${fmt(r.eyeAspect)}`;
   }
 
   _onResize() {
