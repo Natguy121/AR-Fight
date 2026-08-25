@@ -48,6 +48,7 @@ class ARFight {
       btnRecenter: document.getElementById('btn-recenter'),
       btnFlipVideo: document.getElementById('btn-fliprot'),
       btnRestart: document.getElementById('btn-restart'),
+      debugOrientation: document.getElementById('debug-orientation'),
     };
 
     this.frameMap = new VideoFrameMap();
@@ -163,6 +164,35 @@ class ARFight {
       // Coming back from background leaves a huge dt; treat it as a fresh start.
       if (!document.hidden) this._lastFrameMs = performance.now();
     });
+  }
+
+  /**
+   * Opt-in (config.debug.showOrientationInfo, or `?debug=1`) readout of raw
+   * device-orientation sensor values and the derived screen-angle
+   * compensation. Plain DOM, so — unlike the 3D scene a head-tracking bug
+   * would tilt — this stays level and legible in a screenshot regardless of
+   * whether that math is currently right or wrong, which is the point: it
+   * turns "still looks tilted" into actual numbers to diagnose from.
+   */
+  _updateOrientationDebug(nowMs) {
+    const el = this.dom.debugOrientation;
+    if (!config.debug.showOrientationInfo) {
+      if (!el.hidden) el.hidden = true;
+      return;
+    }
+    if (el.hidden) el.hidden = false;
+    // Text nodes are cheap but not free; a human reads this, not a frame budget.
+    if (nowMs - (this._lastDebugUpdateMs || 0) < 150) return;
+    this._lastDebugUpdateMs = nowMs;
+
+    const d = this.head.getDebugInfo();
+    const fmt = (n) => (Number.isFinite(n) ? n.toFixed(1) : 'n/a');
+    el.textContent =
+      `sensor: ${d.hasSensor ? 'yes' : 'no'}  pointerFallback: ${d.usingPointerFallback}\n` +
+      `alpha ${fmt(d.alphaDeg)}  beta ${fmt(d.betaDeg)}  gamma ${fmt(d.gammaDeg)}\n` +
+      `orientation.angle: ${fmt(d.reportedAngleDeg)}  type: ${d.orientationType}\n` +
+      `screenAngle (used): ${fmt(d.screenAngleDeg)}\n` +
+      `innerWidth x innerHeight: ${window.innerWidth} x ${window.innerHeight}`;
   }
 
   _onResize() {
@@ -371,6 +401,7 @@ class ARFight {
     const timeSec = nowMs / 1000;
 
     this.head.update();
+    this._updateOrientationDebug(nowMs);
     this.fsm.tick(dt);
 
     const hasNewFrame = this.cameraFeed.poll();

@@ -99,6 +99,12 @@
      over (DOM cannot be shown to both eyes). -->
 <div id="status" hidden></div>
 
+<!-- Orientation diagnostics: plain DOM, so unlike the 3D scene it stays
+     level no matter what head-tracking is doing — a screenshot of this is
+     what actually shows whether the sensor math is right. Opt-in only
+     (config.debug.showOrientationInfo, or a `?debug=1` URL param). -->
+<div id="debug-orientation" hidden></div>
+
 <noscript>
   <div class="overlay"><div class="gate-card"><h1>AR&#8209;Fight</h1>
   <p>This app needs JavaScript.</p></div></div>

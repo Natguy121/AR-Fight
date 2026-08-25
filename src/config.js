@@ -215,8 +215,26 @@ export const config = {
     showGrid: true,
     /** Log state transitions to the console. */
     logStates: true,
+    /**
+     * Show a small fixed-position (not 3D — stays level no matter what the
+     * scene is doing) readout of raw device-orientation sensor values and
+     * the derived screen-angle compensation. Off by default; also forced on
+     * by a `?debug=1` URL parameter, since editing this file and redeploying
+     * is a much longer loop than adding a query string on a phone.
+     */
+    showOrientationInfo: false,
   },
 };
+
+if (typeof window !== 'undefined' && typeof location !== 'undefined') {
+  try {
+    if (new URLSearchParams(location.search).get('debug') === '1') {
+      config.debug.showOrientationInfo = true;
+    }
+  } catch {
+    /* URLSearchParams unavailable or location inaccessible; not fatal. */
+  }
+}
 
 if (typeof window !== 'undefined') {
   window.ARFIGHT_CONFIG = config;

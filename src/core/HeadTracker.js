@@ -207,6 +207,20 @@ export class HeadTracker {
     return out.set(0, 0, -1).applyQuaternion(this.quaternion);
   }
 
+  /** Raw sensor + derived state, for the on-screen orientation debug readout. */
+  getDebugInfo() {
+    return {
+      hasSensor: this.hasSensor,
+      usingPointerFallback: this.usingPointerFallback,
+      alphaDeg: THREE.MathUtils.radToDeg(this._raw.alpha),
+      betaDeg: THREE.MathUtils.radToDeg(this._raw.beta),
+      gammaDeg: THREE.MathUtils.radToDeg(this._raw.gamma),
+      reportedAngleDeg: Number(screen.orientation?.angle ?? window.orientation ?? 0) || 0,
+      screenAngleDeg: THREE.MathUtils.radToDeg(this._screenAngle),
+      orientationType: screen.orientation?.type ?? '(unavailable)',
+    };
+  }
+
   dispose() {
     clearTimeout(this._fallbackTimer);
     window.removeEventListener('deviceorientationabsolute', this._onOrientation, true);

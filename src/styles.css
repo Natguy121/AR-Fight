@@ -286,3 +286,23 @@ button {
 }
 
 #status[hidden] { display: none; }
+
+#debug-orientation {
+  position: fixed;
+  z-index: 13;
+  left: max(10px, env(safe-area-inset-left));
+  top: max(10px, env(safe-area-inset-top));
+  max-width: min(320px, calc(100vw - 20px));
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  color: #8bf5a0;
+  background: rgba(8, 12, 20, 0.78);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+#debug-orientation[hidden] { display: none; }
