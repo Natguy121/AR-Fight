@@ -25,6 +25,29 @@ export const config = {
     verticalFovDeg: 59,
   },
 
+  /** 3DoF head orientation, from `deviceorientation`. */
+  head: {
+    /**
+     * Adaptive smoothing on the raw sensor quaternion, One-Euro style: heavy
+     * at rest, nearly none while actually turning. Unfiltered orientation
+     * sensors read as a visible shake/vibration in anything world-locked
+     * that sits still relative to your view — a text panel most of all,
+     * since sharp edges make small jitter obvious in a way a moving 3D
+     * scene mostly hides.
+     *
+     * `minCutoff` (Hz) sets the smoothing floor at zero angular speed — lower
+     * damps more but adds more lag turning your head. `beta` is how fast
+     * that floor gets abandoned as speed increases; higher reaches full
+     * responsiveness sooner. Comfort in a headset depends on latency far
+     * more than on precision here, so beta is deliberately generous.
+     */
+    smoothing: {
+      minCutoff: 0.4,
+      beta: 0.6,
+      dCutoff: 1.0,
+    },
+  },
+
   /** Stereo output: the phone in a Cardboard-style shell. */
   stereo: {
     /** Start in side-by-side headset mode. Toggleable at runtime. */

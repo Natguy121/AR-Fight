@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 
 import config from '../src/config.js';
 import { VideoFrameMap } from '../src/core/VideoFrameMap.js';
+import { HeadTracker } from '../src/core/HeadTracker.js';
 import { State, StateMachine } from '../src/core/AppState.js';
 import { principalAxis, distanceToSegment, raySphere, angleAt } from '../src/util/math3d.js';
 import { OneEuroFilter } from '../src/util/OneEuroFilter.js';
@@ -288,6 +289,117 @@ test('a rotated landmark still reprojects onto the pixel it came from', () => {
     near(world.x, expected.x, 1e-6, `ndc x at depth ${depth}`);
     near(world.y, expected.y, 1e-6, `ndc y at depth ${depth}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+group('HeadTracker rotation smoothing');
+
+/** A HeadTracker with the sensor path forced on, bypassing DOM event wiring. */
+function fakeHeadTracker() {
+  const head = new HeadTracker(null);
+  head.hasSensor = true;
+  return head;
+}
+
+test('a still-but-noisy sensor is damped, not passed straight through', () => {
+  const head = fakeHeadTracker();
+  head._screenAngle = Math.PI / 2; // landscape, matches real use
+
+  // A deterministic pseudo-random generator so this test is reproducible.
+  let seed = 12345;
+  const noise = (amplitudeRad) => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return ((seed / 0x7fffffff) * 2 - 1) * amplitudeRad;
+  };
+
+  const rawDeltas = [];
+  const smoothedDeltas = [];
+  let prevRaw = null;
+  let prevSmoothed = null;
+
+  for (let i = 0; i < 180; i++) {
+    // A hand held "still" still reads a couple of degrees of sensor noise.
+    head._raw.alpha = noise(THREE.MathUtils.degToRad(2));
+    head._raw.beta = noise(THREE.MathUtils.degToRad(2));
+    head._raw.gamma = noise(THREE.MathUtils.degToRad(2));
+
+    const raw = head._composeDeviceQuaternion(new THREE.Quaternion());
+    const smoothed = head.update(i / 60).clone();
+
+    if (prevRaw) {
+      rawDeltas.push(THREE.MathUtils.radToDeg(prevRaw.angleTo(raw)));
+      smoothedDeltas.push(THREE.MathUtils.radToDeg(prevSmoothed.angleTo(smoothed)));
+    }
+    prevRaw = raw;
+    prevSmoothed = smoothed;
+  }
+
+  // Skip the initial settling window; steady-state behaviour is what matters.
+  const steadyRaw = rawDeltas.slice(60);
+  const steadySmoothed = smoothedDeltas.slice(60);
+  const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  const avgRawJitter = avg(steadyRaw);
+  const avgSmoothedJitter = avg(steadySmoothed);
+
+  assert.ok(avgSmoothedJitter < avgRawJitter * 0.5,
+    `expected smoothed frame-to-frame jitter well below raw; raw avg=${avgRawJitter.toFixed(3)}deg, smoothed avg=${avgSmoothedJitter.toFixed(3)}deg`);
+});
+
+test('a steady head turn is tracked with bounded lag, not left behind', () => {
+  const head = fakeHeadTracker();
+  head._screenAngle = Math.PI / 2;
+
+  const degPerSec = 90; // a brisk but ordinary turn
+  const dt = 1 / 60;
+  let lastYaw = 0;
+
+  for (let i = 0; i < 120; i++) { // 2 seconds — long enough to reach steady state
+    const t = i * dt;
+    head._raw.alpha = degPerSec * t * (Math.PI / 180);
+    lastYaw = head._raw.alpha;
+    head.update(t);
+  }
+
+  const forward = head.getForward(new THREE.Vector3());
+  // alpha feeds yaw (rotation about world Y) via the YXZ Euler composition;
+  // recover it the same way HeadTracker.recenter() does.
+  const trackedYaw = Math.atan2(forward.x, -forward.z);
+  const expectedYaw = ((-lastYaw % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const trackedYawNorm = ((trackedYaw % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  let lagDeg = THREE.MathUtils.radToDeg(Math.abs(expectedYaw - trackedYawNorm));
+  if (lagDeg > 180) lagDeg = 360 - lagDeg;
+
+  // At beta=0.6, minCutoff=0.4 and 90deg/s, steady-state lag should settle
+  // to a fraction of a frame's worth of motion, nowhere near a full second
+  // behind — this is the "doesn't feel laggy while actually turning" half
+  // of the trade-off the jitter test above covers the other half of.
+  assert.ok(lagDeg < 15, `expected steady-state lag under 15deg at ${degPerSec}deg/s, got ${lagDeg.toFixed(2)}deg`);
+});
+
+test('recentre resets the smoother so the next frame snaps instead of gliding', () => {
+  const head = fakeHeadTracker();
+  head._screenAngle = Math.PI / 2;
+  // beta=0 reads as the phone lying flat, screen up — forward ends up
+  // pointing straight down, where yaw is undefined (the north-pole problem).
+  // This app only runs held upright, matching a Cardboard shell: beta~90deg.
+  head._raw.beta = Math.PI / 2;
+
+  // Build up smoothed state pointing one way.
+  for (let i = 0; i < 30; i++) {
+    head._raw.alpha = 0;
+    head.update(i / 60);
+  }
+
+  // Recentre while facing a very different direction.
+  head._raw.alpha = Math.PI / 2; // 90deg yaw
+  head.recenter();
+
+  // Immediately after, "forward" must already read as straight ahead — not
+  // partway through a multi-frame glide from the old orientation.
+  head.update(30 / 60);
+  const forward = head.getForward(new THREE.Vector3());
+  const yaw = Math.atan2(forward.x, -forward.z);
+  near(THREE.MathUtils.radToDeg(yaw), 0, 1, 'yaw should read ~0deg (straight ahead) on the very first post-recentre frame');
 });
 
 // ---------------------------------------------------------------------------

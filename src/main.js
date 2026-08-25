@@ -406,7 +406,7 @@ class ARFight {
     this._lastFrameMs = nowMs;
     const timeSec = nowMs / 1000;
 
-    this.head.update();
+    this.head.update(timeSec);
     this._updateOrientationDebug(nowMs);
     this.fsm.tick(dt);
 

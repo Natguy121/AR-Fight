@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import config from '../config.js';
 
 const _zee = new THREE.Vector3(0, 0, 1);
 const _euler = new THREE.Euler();
@@ -6,6 +7,77 @@ const _q0 = new THREE.Quaternion();
 // Rotate -90deg about X: device orientation frames have the screen in the XY
 // plane looking along +Z, three.js cameras look along -Z.
 const _screenTransform = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+
+function _alphaFor(cutoff, dt) {
+  const tau = 1 / (2 * Math.PI * cutoff);
+  return 1 / (1 + tau / dt);
+}
+
+/**
+ * One-Euro-style adaptive smoothing for a rotation. This app's OneEuroVec3
+ * (util/OneEuroFilter.js) filters a vector's x/y/z components independently,
+ * which is exactly wrong for a quaternion: q and -q represent the same
+ * rotation, so a raw sample can flip sign frame to frame, and averaging
+ * components independently across that flip pulls toward neither endpoint
+ * rather than either one. Slerping toward the raw sample sidesteps this —
+ * THREE.Quaternion.slerp() already takes the shorter path regardless of
+ * sign — so this mirrors OneEuroFilter's *cutoff adaptation* (heavy damping
+ * at rest, almost none once actually moving) but drives a slerp blend
+ * instead of a per-component lerp.
+ */
+class RotationSmoother {
+  constructor({ minCutoff, beta, dCutoff }) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this._speed = 0;
+    this._speedInitialised = false;
+    this._value = null;
+    this._prevRaw = new THREE.Quaternion();
+    this._lastTime = null;
+  }
+
+  /**
+   * @param {THREE.Quaternion} raw Not mutated.
+   * @param {number} t Monotonic time in seconds.
+   * @param {THREE.Quaternion} out Destination; also becomes the filter's new state.
+   */
+  filter(raw, t, out) {
+    if (this._value === null) {
+      this._value = raw.clone();
+      this._prevRaw.copy(raw);
+      this._lastTime = t;
+      return out.copy(raw);
+    }
+
+    let dt = 1 / 60;
+    if (this._lastTime !== null) {
+      const delta = t - this._lastTime;
+      // Guard against stalls (tab backgrounded) and duplicate timestamps.
+      if (delta > 1e-5 && delta < 0.5) dt = delta;
+    }
+    this._lastTime = t;
+
+    const rawSpeed = this._prevRaw.angleTo(raw) / dt;
+    this._prevRaw.copy(raw);
+    const speedAlpha = _alphaFor(this.dCutoff, dt);
+    this._speed = this._speedInitialised
+      ? speedAlpha * rawSpeed + (1 - speedAlpha) * this._speed
+      : rawSpeed;
+    this._speedInitialised = true;
+
+    const cutoff = this.minCutoff + this.beta * this._speed;
+    this._value.slerp(raw, _alphaFor(cutoff, dt));
+    return out.copy(this._value);
+  }
+
+  reset() {
+    this._speed = 0;
+    this._speedInitialised = false;
+    this._value = null;
+    this._lastTime = null;
+  }
+}
 
 /**
  * 3DoF head tracking from `deviceorientation`.
@@ -34,6 +106,8 @@ export class HeadTracker {
     this._screenAngle = 0;
     this._yawOffset = new THREE.Quaternion();
     this._deviceQuat = new THREE.Quaternion();
+    this._rawQuat = new THREE.Quaternion();
+    this._smoother = new RotationSmoother(config.head.smoothing);
 
     // Pointer-drag fallback state.
     this._drag = { active: false, x: 0, y: 0, yaw: 0, pitch: 0 };
@@ -177,8 +251,21 @@ export class HeadTracker {
     // Cancel only yaw; pitch and roll are gravity-referenced and correct.
     this._composeDeviceQuaternion(this._deviceQuat);
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this._deviceQuat);
+    // atan2(x, -z) reads the *negative* of the rotation that produced this
+    // forward vector (e.g. a genuine +37deg turn reads back as yaw=-37deg —
+    // verified numerically, not just by inspection). The offset needed to
+    // cancel a +37deg turn is another +37deg, i.e. +yaw, not -yaw: negating
+    // it a second time here compounded the turn instead of undoing it, so
+    // recentring after turning 90 degrees pointed "forward" 180 degrees
+    // from the way you were actually facing.
     const yaw = Math.atan2(forward.x, -forward.z);
-    this._yawOffset.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -yaw);
+    this._yawOffset.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+    // The yaw offset just jumped, so the smoother's own state (built up
+    // relative to the old one) is stale — without this it would slerp
+    // smoothly from the old "forward" to the new one over the next several
+    // frames, i.e. recentre would visibly glide instead of snapping.
+    this._smoother.reset();
   }
 
   _composeDeviceQuaternion(out) {
@@ -190,11 +277,19 @@ export class HeadTracker {
     return out;
   }
 
-  /** Refresh `quaternion`. Call once per frame before rendering. */
-  update() {
+  /**
+   * Refresh `quaternion`. Call once per frame before rendering.
+   * @param {number} [t] Monotonic time in seconds, for the smoothing filter's
+   *   speed estimate. Falls back to wall-clock time for the rare caller that
+   *   does not have a frame timestamp handy (startup, the recentre button) —
+   *   only the continuous per-frame path in the main loop needs this to line
+   *   up with the rest of that frame's timing.
+   */
+  update(t = performance.now() / 1000) {
     if (this.hasSensor) {
       this._composeDeviceQuaternion(this._deviceQuat);
-      this.quaternion.copy(this._yawOffset).multiply(this._deviceQuat);
+      this._rawQuat.copy(this._yawOffset).multiply(this._deviceQuat);
+      this._smoother.filter(this._rawQuat, t, this.quaternion);
     } else if (this.usingPointerFallback) {
       _euler.set(this._drag.pitch, this._drag.yaw, 0, 'YXZ');
       this.quaternion.setFromEuler(_euler);
