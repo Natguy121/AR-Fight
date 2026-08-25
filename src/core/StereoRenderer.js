@@ -270,6 +270,10 @@ export class StereoRenderer {
     this.target.setSize(bufW, bufH);
     this.size.set(bufW, bufH);
 
+    // Stereo in a phone headset is always landscape: eyes side-by-side (left-right).
+    // Even if the screen reports portrait dimensions (e.g., rotation locked before
+    // launch), the Cardboard layout requires horizontal split. eyeAspect is the
+    // aspect of ONE eye's half-width viewport.
     this.eyeAspect = this.stereo ? (w * 0.5) / h : w / h;
     this.postUniforms.uAspect.value = this.eyeAspect;
 
@@ -326,12 +330,17 @@ export class StereoRenderer {
     r.setScissorTest(true);
 
     const eyes = this.stereo ? 2 : 1;
+    // Render eyes left-right by default (eyeW = w/2, eyeH = h).
+    // This is correct for landscape headsets where w > h.
+    // Even in portrait mode, headset use is landscape, so eyes stay horizontal.
     const eyeW = this.stereo ? w * 0.5 : w;
+    const eyeH = h;
 
     for (let i = 0; i < eyes; i++) {
       const x = this.stereo ? i * eyeW : 0;
-      r.setViewport(x, 0, eyeW, h);
-      r.setScissor(x, 0, eyeW, h);
+      const y = 0;
+      r.setViewport(x, y, eyeW, eyeH);
+      r.setScissor(x, y, eyeW, eyeH);
       r.clear(true, true, true);
 
       // Passthrough first, depth-disabled, then the world on top of it.
