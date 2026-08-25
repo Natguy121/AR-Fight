@@ -93,8 +93,41 @@ export class HeadTracker {
   }
 
   _onScreenChange() {
-    const angle = screen.orientation?.angle ?? window.orientation ?? 0;
-    this._screenAngle = THREE.MathUtils.degToRad(Number(angle) || 0);
+    let angle = ((Number(screen.orientation?.angle ?? window.orientation ?? 0) || 0) % 360 + 360) % 360;
+
+    // `deviceorientation`'s alpha/beta/gamma are defined relative to the
+    // device's *natural* orientation, not however the page currently lays
+    // out — this angle is what re-references them to the page. It has to
+    // agree with the page's own CSS shape or every 3D object (world-space
+    // UI, the weapon) comes out rolled relative to the screen-locked video
+    // background, which does not go through this compensation at all and so
+    // stays put — exactly the mismatch that makes a panel look tilted.
+    //
+    // On some browsers `screen.orientation.lock()` resolves without ever
+    // firing the 'change' event this value is refreshed from, so it can be
+    // caught stuck at a portrait angle (0/180) after the page has already
+    // gone landscape (confirmed elsewhere by innerWidth > innerHeight, the
+    // same check the rotate-gate uses). When the two disagree, the CSS shape
+    // wins — trust what is actually on screen over a stale event.
+    const cssLandscape = window.innerWidth > window.innerHeight;
+    const angleIsLandscape = angle === 90 || angle === 270;
+    if (cssLandscape && !angleIsLandscape) {
+      angle = 90;
+    } else if (!cssLandscape && angleIsLandscape) {
+      angle = 0;
+    }
+
+    this._screenAngle = THREE.MathUtils.degToRad(angle);
+  }
+
+  /**
+   * Re-derive the screen-angle compensation right now rather than waiting on
+   * an orientation event. Safe to call whenever the caller already knows the
+   * CSS layout just settled — e.g. after its own resize handling — since the
+   * correction above depends on reading a fresh `window.innerWidth/Height`.
+   */
+  refreshScreenAngle() {
+    this._onScreenChange();
   }
 
   _onOrientation(event) {

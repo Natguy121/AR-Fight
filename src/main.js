@@ -151,6 +151,13 @@ class ARFight {
       // Give the browser a beat to settle the new viewport size.
       setTimeout(() => this._onResize(), 120);
     });
+    // Entering/exiting fullscreen (part of _tryForceLandscape) changes the
+    // canvas's available size too, and doesn't reliably pair with a plain
+    // 'resize' event on every browser — Android in particular can settle its
+    // system bars a beat after the fullscreenchange event itself fires.
+    document.addEventListener('fullscreenchange', () => {
+      setTimeout(() => this._onResize(), 120);
+    });
 
     document.addEventListener('visibilitychange', () => {
       // Coming back from background leaves a huge dt; treat it as a fresh start.
@@ -171,6 +178,13 @@ class ARFight {
     this.renderer.syncFrameMap();
     this.pointerHand.setStereo(this.renderer.stereo);
     this._updateOrientationGate();
+    // Re-validate the head-tracking screen-angle compensation against
+    // whatever the CSS layout actually is right now. `screen.orientation`'s
+    // own 'change' event is the primary trigger for this, but it does not
+    // fire reliably after every route into landscape (fullscreen + lock in
+    // particular) — this is the second, resize-driven path that catches it
+    // whenever the layout itself changes for any reason.
+    this.head.refreshScreenAngle?.();
   }
 
   /**
@@ -249,6 +263,17 @@ class ARFight {
       // already denied once this session). Either way, gameplay does not
       // depend on this succeeding.
       console.info('[AR-Fight] Could not force landscape (falling back to manual rotation):', err?.message || err);
+    } finally {
+      // Either branch can leave stale layout behind: a successful lock does
+      // not reliably fire `screen.orientation`'s 'change' event on every
+      // browser, and a rejected one can still have partially resized the
+      // viewport (fullscreen toggling before the lock call failed). This is
+      // called from `start()` before the camera/tracker/UI are even up, so
+      // there is nothing yet to resize — the resize this actually needs to
+      // trigger is the one `start()` already runs once boot finishes; this
+      // just re-runs it once more, after this async work has fully settled,
+      // in case that earlier one landed mid-transition.
+      if (this.running) this._onResize();
     }
   }
 

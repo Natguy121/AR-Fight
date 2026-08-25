@@ -405,6 +405,27 @@ async function main() {
     check(stuck === rotate.after, 'the manual rotation survives a resize',
       `expected ${rotate.after}, got ${stuck}`);
 
+    // On some browsers `screen.orientation.lock()` resolves without firing
+    // the 'change' event HeadTracker's angle compensation refreshes from,
+    // which can leave it stuck reporting a portrait angle after the page has
+    // already gone landscape — the CSS layout and the 3D scene's idea of
+    // "up" then disagree, and every world-space panel (the UI, the weapon)
+    // renders visibly rolled relative to the screen-locked video background.
+    // A resize is the independent, always-fires signal this self-corrects
+    // from, so simulate exactly that stuck state and confirm it heals.
+    const screenAngleFix = await page.evaluate(() => {
+      const head = window.ARFIGHT.head;
+      Object.defineProperty(screen.orientation, 'angle', { value: 0, configurable: true });
+      const isLandscape = window.innerWidth > window.innerHeight;
+      head.refreshScreenAngle();
+      return { angleDeg: (head._screenAngle * 180) / Math.PI, isLandscape };
+    });
+    check(
+      !screenAngleFix.isLandscape || screenAngleFix.angleDeg === 90,
+      'head-tracking angle self-corrects when stuck at a portrait value on a landscape layout',
+      `landscape=${screenAngleFix.isLandscape}, angle=${screenAngleFix.angleDeg}`,
+    );
+
     // Start a fresh weapon: exercises teardown, which is where leaks hide.
     await page.evaluate(() => window.ARFIGHT._startNewWeapon());
     await page.waitForTimeout(250);
