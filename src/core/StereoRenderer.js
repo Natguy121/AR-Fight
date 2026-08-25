@@ -230,6 +230,34 @@ export class StereoRenderer {
     this.bgUniforms.uMirror.value = mirrored ? 1 : 0;
   }
 
+  /**
+   * Adjust IPD and update eye camera positions immediately.
+   * @param {number} ipd - Interpupillary distance in metres
+   */
+  setIPD(ipd) {
+    config.stereo.ipd = Math.max(0.04, Math.min(0.1, ipd));
+  }
+
+  /**
+   * Adjust lens center offset and update shader uniforms immediately.
+   * @param {number} offset - Lens shift in normalised half-screen units
+   */
+  setLensCenterOffset(offset) {
+    config.stereo.lensCenterOffset = Math.max(-0.15, Math.min(0.15, offset));
+    this.postUniforms.uLensShift.value = config.stereo.lensCenterOffset;
+  }
+
+  /**
+   * Get current stereo calibration values.
+   * @returns {{ipd: number, lensCenterOffset: number}}
+   */
+  getStereoCal() {
+    return {
+      ipd: config.stereo.ipd,
+      lensCenterOffset: config.stereo.lensCenterOffset,
+    };
+  }
+
   resize() {
     const w = Math.max(2, Math.floor(this.canvas.clientWidth || window.innerWidth));
     const h = Math.max(2, Math.floor(this.canvas.clientHeight || window.innerHeight));

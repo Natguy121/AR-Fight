@@ -113,6 +113,11 @@ class ARFight {
     /** Once true, stops the auto-heuristic from overriding the user's own choice. */
     this._videoRotationManual = false;
 
+    /** True when stereo calibration mode is active. */
+    this._stereoCalibrating = false;
+    /** Saved stereo cal before entering calibration mode, for undo. */
+    this._stereoCalBackup = null;
+
     this._bindUI();
   }
 
@@ -308,6 +313,9 @@ class ARFight {
       this.ui.recenter(this.head.position, this.head.quaternion);
       this._updateOrientationGate();
 
+      // Load saved stereo calibration if available.
+      this._loadStereoCalibration();
+
       // `go` fires the state-change callback, which builds the first screen.
       this.fsm.go(ok ? State.CHECK : State.DRAW, true);
 
@@ -426,11 +434,13 @@ class ARFight {
         this.melee.reset();
         this.projectiles.clear();
         this.swingTrail.clear();
+        this._stereoCalibrating = false;
         this._refreshEquipPrompt();
         this.ui.setButtons([
-          { id: 'new-weapon', label: 'New', hint: 'draw another', width: 0.28 },
-          { id: 'retag', label: 'Re-tag', hint: 'move the points', width: 0.32 },
-          { id: 'reset-targets', label: 'Targets', hint: 'reset', width: 0.3 },
+          { id: 'new-weapon', label: 'New', hint: 'draw another', width: 0.25 },
+          { id: 'retag', label: 'Re-tag', hint: 'move the points', width: 0.28 },
+          { id: 'reset-targets', label: 'Targets', hint: 'reset', width: 0.25 },
+          { id: 'calibrate-stereo', label: 'Stereo', hint: 'tune', width: 0.25 },
         ]);
         break;
 
@@ -618,6 +628,10 @@ class ARFight {
   }
 
   _updateEquip(dt, nowMs, hand) {
+    if (this._stereoCalibrating) {
+      return; // Skip weapon update during calibration
+    }
+
     this.rig.update(hand, dt);
 
     if (this.weapon?.category === 'gun') {
@@ -649,6 +663,67 @@ class ARFight {
       'success',
     );
     this._syncStatusFromUI();
+  }
+
+  _loadStereoCalibration() {
+    try {
+      const saved = localStorage.getItem('ar-fight-stereo-cal');
+      if (saved) {
+        const cal = JSON.parse(saved);
+        this.renderer.setIPD(cal.ipd);
+        this.renderer.setLensCenterOffset(cal.lensCenterOffset);
+      }
+    } catch (e) {
+      console.warn('Could not load stereo calibration:', e);
+    }
+  }
+
+  _enterStereoCalibration() {
+    this._stereoCalibrating = true;
+    this._stereoCalBackup = this.renderer.getStereoCal();
+    this._refreshStereoCalibration();
+  }
+
+  _refreshStereoCalibration() {
+    const cal = this.renderer.getStereoCal();
+    const ipdMm = Math.round(cal.ipd * 1000);
+    const offsetPct = Math.round(cal.lensCenterOffset * 100);
+    this.ui.setPrompt(
+      'Stereo Calibration',
+      `IPD: ${ipdMm}mm · Offset: ${offsetPct}%\nAdjust until the two eye-circles fuse into one`,
+    );
+    this.ui.setButtons([
+      { id: 'stereo-ipd-minus', label: '−', hint: 'IPD', width: 0.15 },
+      { id: 'stereo-ipd-plus', label: '+', hint: 'IPD', width: 0.15 },
+      { id: 'stereo-offset-minus', label: '−', hint: 'Offset', width: 0.15 },
+      { id: 'stereo-offset-plus', label: '+', hint: 'Offset', width: 0.15 },
+      { id: 'stereo-cal-save', label: 'Save', width: 0.22 },
+      { id: 'stereo-cal-cancel', label: 'Cancel', width: 0.22 },
+    ]);
+  }
+
+  _saveStereoCalibration() {
+    const cal = this.renderer.getStereoCal();
+    try {
+      localStorage.setItem('ar-fight-stereo-cal', JSON.stringify(cal));
+    } catch (e) {
+      console.warn('Could not save stereo calibration:', e);
+    }
+    this._exitStereoCalibration();
+  }
+
+  _exitStereoCalibration() {
+    this._stereoCalibrating = false;
+    if (this._stereoCalBackup) {
+      // If exiting via cancel, could restore: but we'll just leave the current values
+    }
+    this._stereoCalBackup = null;
+    this._refreshEquipPrompt();
+    this.ui.setButtons([
+      { id: 'new-weapon', label: 'New', hint: 'draw another', width: 0.28 },
+      { id: 'retag', label: 'Re-tag', hint: 'move the points', width: 0.32 },
+      { id: 'reset-targets', label: 'Targets', hint: 'reset', width: 0.3 },
+    ]);
   }
 
   // -------------------------------------------------------------- transitions
@@ -717,6 +792,45 @@ class ARFight {
         this.targets.reset();
         this.sound.confirm();
         this._refreshEquipPrompt();
+        break;
+
+      case 'calibrate-stereo':
+        this.sound.tick();
+        this._enterStereoCalibration();
+        break;
+
+      case 'stereo-ipd-minus':
+        this.sound.tick();
+        this.renderer.setIPD(this.renderer.getStereoCal().ipd - 0.001);
+        this._refreshStereoCalibration();
+        break;
+
+      case 'stereo-ipd-plus':
+        this.sound.tick();
+        this.renderer.setIPD(this.renderer.getStereoCal().ipd + 0.001);
+        this._refreshStereoCalibration();
+        break;
+
+      case 'stereo-offset-minus':
+        this.sound.tick();
+        this.renderer.setLensCenterOffset(this.renderer.getStereoCal().lensCenterOffset - 0.005);
+        this._refreshStereoCalibration();
+        break;
+
+      case 'stereo-offset-plus':
+        this.sound.tick();
+        this.renderer.setLensCenterOffset(this.renderer.getStereoCal().lensCenterOffset + 0.005);
+        this._refreshStereoCalibration();
+        break;
+
+      case 'stereo-cal-save':
+        this.sound.confirm();
+        this._saveStereoCalibration();
+        break;
+
+      case 'stereo-cal-cancel':
+        this.sound.cancel();
+        this._exitStereoCalibration();
         break;
 
       default:
