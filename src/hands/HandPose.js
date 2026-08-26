@@ -198,7 +198,10 @@ export class HandPose {
    */
   _solvePose(world, frameMap) {
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(config.camera.verticalFovDeg) * 0.5);
-    const videoAspect = frameMap.videoAspect;
+    // `effectiveAspect`, not the raw decoded `videoAspect`: a 90/270 rotation
+    // swaps which physical sensor axis ends up wide, and this fit needs the
+    // *physical* geometry, not the raw decode.
+    const effectiveAspect = frameMap.effectiveAspect;
     const n = FIT_INDICES.length;
 
     let px = 0, py = 0, pz = 0;
@@ -207,7 +210,14 @@ export class HandPose {
     }
     px /= n; py /= n; pz /= n;
 
-    // Cache centred model points, raw image tangents, and unit weights.
+    // Cache centred model points, physical-corrected image tangents, and unit
+    // weights. Raw `_u/_v` alone would be exactly wrong the moment `rotation`
+    // or `mirrorX` is anything but the identity: POSIT solves for a 3D
+    // rotation from 2D *directions*, so unlike the position lift (which only
+    // needs each landmark to land back on its own pixel, rotation or not),
+    // this fit needs those directions expressed in the camera's true,
+    // corrected orientation — and a mirrored raw frame is a reflection, which
+    // no rotation this fit could solve for will ever explain correctly.
     let bxx = 0, bxy = 0, bxz = 0, byy = 0, byz = 0, bzz = 0;
     for (let k = 0; k < n; k++) {
       const i = FIT_INDICES[k];
@@ -215,8 +225,9 @@ export class HandPose {
       const qy = world[i].y - py;
       const qz = world[i].z - pz;
       _fitPx[k] = qx; _fitPy[k] = qy; _fitPz[k] = qz;
-      _fitAx[k] = (2 * _u[i] - 1) * tanHalf * videoAspect;
-      _fitAy[k] = (1 - 2 * _v[i]) * tanHalf;
+      frameMap.toEffectiveUV(_u[i], _v[i], _effUV);
+      _fitAx[k] = (2 * _effUV.x - 1) * tanHalf * effectiveAspect;
+      _fitAy[k] = (1 - 2 * _effUV.y) * tanHalf;
       _fitW[k] = 1;
 
       bxx += qx * qx; bxy += qx * qy; bxz += qx * qz;
@@ -430,6 +441,7 @@ const POSIT_ITERATIONS = 4;
 
 const _u = new Float64Array(21);
 const _v = new Float64Array(21);
+const _effUV = { x: 0, y: 0 };
 const _relativeZ = new Float64Array(21);
 const _fitResult = { depth: 0, relativeZ: _relativeZ };
 

@@ -103,11 +103,27 @@ export class VideoFrameMap {
    * @param {THREE.Vector2} [out]
    */
   videoToNdc(u, v, out = new THREE.Vector2()) {
-    const uu = this.mirrorX ? 1 - u : u;
-    this._rotateToEffective(uu, v, _tmpUV);
+    this.toEffectiveUV(u, v, _tmpUV);
     out.x = (_tmpUV.x - 0.5) * 2 * this.scaleX;
     out.y = -(_tmpUV.y - 0.5) * 2 * this.scaleY;
     return out;
+  }
+
+  /**
+   * Undo `rotation` and `mirrorX` only — lands in the same corrected
+   * orientation as `videoToNdc`, but without its cover-fit `scaleX/scaleY`
+   * (that scale exists purely to letterbox/crop video onto the display, and
+   * has no meaning for physical camera geometry).
+   *
+   * `HandPose`'s POSIT solve needs exactly this: it reasons about which
+   * *physical* direction each raw pixel corresponds to (a mirrored raw
+   * frame is a reflection, not a rotation, and a fit that doesn't know that
+   * silently mis-solves depth), which is a different question from where
+   * that pixel lands on screen.
+   */
+  toEffectiveUV(u, v, out = new THREE.Vector2()) {
+    const uu = this.mirrorX ? 1 - u : u;
+    return this._rotateToEffective(uu, v, out);
   }
 
   /** True when the landmark falls inside the visible (uncropped) region. */

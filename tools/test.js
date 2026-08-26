@@ -528,6 +528,63 @@ test('reconstructed landmarks match the true camera-space geometry', () => {
   }
 });
 
+/**
+ * Same idea as `synthesiseDetection`, but for a `map` with a non-identity
+ * `rotation`/`mirrorX` — i.e. a device whose raw camera stream needs
+ * correcting, exactly like the one that motivated `toEffectiveUV`. MediaPipe
+ * runs on the *raw* stream, so its 2D landmarks are raw-sensor-relative; this
+ * applies the true inverse of `map`'s own forward transform (rotate then,
+ * only if mirrored, flip — the same order the background shader's inverse
+ * uses) to turn a "what the physical world really looks like" projection
+ * into "what MediaPipe would actually report" for that camera.
+ */
+function synthesiseRawDetection(model, quat, depth, map) {
+  const tanHalf = Math.tan(THREE.MathUtils.degToRad(config.camera.verticalFovDeg) / 2);
+  const worldLandmarks = model.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+  const camPoints = model.map((v) =>
+    v.clone().applyQuaternion(quat).add(new THREE.Vector3(0, 0, -depth)),
+  );
+  const wristDepth = -camPoints[LM.WRIST].z;
+
+  const landmarks = camPoints.map((c) => {
+    const d = -c.z;
+    const trueU = 0.5 + (c.x / d) / (2 * tanHalf * map.videoAspect);
+    const trueV = 0.5 - (c.y / d) / (2 * tanHalf);
+    const rotated = rotateToRawGLSL({ x: trueU, y: trueV }, map.rotation);
+    const rawU = map.mirrorX ? 1 - rotated.x : rotated.x;
+    return { x: rawU, y: rotated.y, z: d - wristDepth };
+  });
+  return { landmarks, worldLandmarks, handedness: 'Right', score: 1, camPoints };
+}
+
+test('depth and orientation survive a rotated, mirrored camera feed', () => {
+  // The exact configuration a player reaches via btn-fliprot (180°) plus the
+  // manual mirror toggle to fix an upside-down, reflected feed. Before
+  // `toEffectiveUV`, `_solvePose`'s image tangents were computed straight
+  // from raw MediaPipe u/v, silently assuming an unrotated, unmirrored
+  // camera — a reflection is not something any rotation can explain away, so
+  // the POSIT fit solved a systematically wrong depth and orientation the
+  // moment mirroring was actually in effect, even though the affected
+  // landmark still reprojected onto the right on-screen pixel.
+  const map = makeFrameMap();
+  map.setRotation(2);
+  map.mirrorX = true;
+  const model = buildHandModel();
+  const quat = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0.4, 0).normalize(), THREE.MathUtils.degToRad(30),
+  );
+
+  const det = synthesiseRawDetection(model, quat, 0.42, map);
+  const pose = settle(new HandPose(), det, map);
+
+  near(pose.depth, 0.42, 0.42 * 0.08, 'depth within 8% despite rotation+mirror');
+  for (const i of [LM.WRIST, LM.INDEX_TIP, LM.PINKY_MCP, LM.THUMB_TIP]) {
+    const error = pose.viewLandmarks[i].distanceTo(det.camPoints[i]);
+    assert.ok(error < 0.02, `landmark ${i} off by ${(error * 1000).toFixed(1)} mm`);
+  }
+  assert.ok(pose.forward.y > 0.9, `forward should still point up the hand, got ${pose.forward.y}`);
+});
+
 test('reconstruction reprojects onto its own pixels despite an FOV mismatch', () => {
   // The headline claim in VideoFrameMap: because landmarks are lifted with the
   // *render* camera's projection, they land under the pixels they came from
