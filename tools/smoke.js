@@ -461,6 +461,34 @@ async function main() {
     check(afterRotate.frames > after.frames, 'still rendering after rotating the video');
     check(!afterRotate.contextLost, 'context survived the rotation change');
 
+    // --- The manual mirror toggle: no combination of 90° rotations can undo
+    // a reflection, so a mirrored feed needs this separate control — check it
+    // actually flips frameMap.mirrorX, reaches the shader, and shows on/off.
+    const mirror = await page.evaluate(() => {
+      const app = window.ARFIGHT;
+      const btn = document.getElementById('btn-mirror');
+      const before = app.frameMap.mirrorX;
+      btn.click();
+      const afterOne = {
+        mirrorX: app.frameMap.mirrorX,
+        shaderUniform: app.renderer.bgUniforms.uMirror.value,
+        hasOnClass: btn.classList.contains('on'),
+      };
+      btn.click();
+      return {
+        before,
+        afterOne,
+        afterTwo: { mirrorX: app.frameMap.mirrorX, hasOnClass: btn.classList.contains('on') },
+      };
+    });
+    check(mirror.afterOne.mirrorX === !mirror.before, 'tapping mirror flips frameMap.mirrorX',
+      `${mirror.before} -> ${mirror.afterOne.mirrorX}`);
+    check(mirror.afterOne.shaderUniform === (mirror.afterOne.mirrorX ? 1 : 0),
+      'the mirror shader uniform matches it');
+    check(mirror.afterOne.hasOnClass === mirror.afterOne.mirrorX, 'mirror button shows on/off state');
+    check(mirror.afterTwo.mirrorX === mirror.before, 'tapping mirror again undoes it');
+    check(mirror.afterTwo.hasOnClass === mirror.afterTwo.mirrorX, 'mirror button state matches after undo');
+
     // Resizing again must not silently revert the player's manual choice.
     await page.setViewportSize({ width: 900, height: 450 });
     await page.waitForTimeout(250);

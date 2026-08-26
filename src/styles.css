@@ -267,6 +267,12 @@ button {
    and the label now cycles through all four states, not just "90°". */
 #btn-fliprot { font-size: 12px; font-weight: 600; }
 
+/* Rotation alone cannot fix a mirrored feed (no combination of 90° turns
+   undoes a reflection) — this is a separate, persistent toggle, so it needs
+   its own on/off indication rather than just the momentary :active tap
+   feedback every button already gets. */
+#btn-mirror.on { background: rgba(90, 200, 250, 0.28); border-color: rgba(90, 200, 250, 0.6); }
+
 #status {
   position: fixed;
   z-index: 11;

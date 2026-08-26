@@ -47,6 +47,7 @@ class ARFight {
       btnStereo: document.getElementById('btn-stereo'),
       btnRecenter: document.getElementById('btn-recenter'),
       btnFlipVideo: document.getElementById('btn-fliprot'),
+      btnMirror: document.getElementById('btn-mirror'),
       btnRestart: document.getElementById('btn-restart'),
       debugOrientation: document.getElementById('debug-orientation'),
     };
@@ -121,6 +122,7 @@ class ARFight {
 
     this._bindUI();
     this._updateFlipButton();
+    this._updateMirrorButton();
   }
 
   // ---------------------------------------------------------------- start-up
@@ -146,6 +148,16 @@ class ARFight {
       // only way to actually fix it, and it should stick once chosen.
       this._videoRotationManual = true;
       this._setVideoRotation(this.videoRotation + 1);
+    });
+
+    this.dom.btnMirror.addEventListener('click', () => {
+      // Rotation alone is a proper-rotation-only fix: no combination of 90°
+      // turns can undo a reflection, so a camera feed that comes in mirrored
+      // (seen as e.g. left/right swapped even once the rotation is right)
+      // needs its own toggle rather than another tap of btn-fliprot.
+      this.frameMap.mirrorX = !this.frameMap.mirrorX;
+      this.renderer.syncFrameMap();
+      this._updateMirrorButton();
     });
 
     window.addEventListener('resize', () => this._onResize());
@@ -279,6 +291,15 @@ class ARFight {
       `(currently ${deg}° — keep tapping until it looks right).`;
   }
 
+  /** Keep the mirror button's on/off indication in sync with `frameMap.mirrorX`. */
+  _updateMirrorButton() {
+    const on = this.frameMap.mirrorX;
+    this.dom.btnMirror.classList.toggle('on', on);
+    this.dom.btnMirror.title = on
+      ? 'Camera background mirrored to fix left/right. Tap to undo.'
+      : 'Left and right still swapped after rotating? Tap to mirror the camera background.';
+  }
+
   /**
    * The camera feed is landscape and the app only makes sense held the same
    * way the headset shell holds it — landscape. Cover-fitting a landscape
@@ -370,6 +391,7 @@ class ARFight {
       // A user-facing camera reads mirrored; keep the mapping honest so hands
       // and strokes still line up.
       this.frameMap.mirrorX = facing === 'user';
+      this._updateMirrorButton();
 
       this.renderer.setVideoTexture(this.cameraFeed.texture, {
         mirrored: this.frameMap.mirrorX,
