@@ -65,6 +65,21 @@ export class CameraFeed {
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.generateMipmaps = false;
+    // Texture.flipY defaults to true (WebGL's texel origin is bottom-left;
+    // three.js pre-flips on upload so "normal" top-left-origin UVs read the
+    // image right-side up). StereoRenderer's background shader instead does
+    // its own manual UV math in raw video-normalised space (v=0 at the top
+    // of the decoded frame, matching MediaPipe's landmark convention exactly
+    // so a rotated/mirrored stream stays in lockstep with hand tracking) —
+    // against a flipY=true upload that convention samples upside down. This
+    // is *the* "camera passthrough is upside down" bug: constant, present
+    // for every device, and entirely invisible to MediaPipe (which reads the
+    // raw <video> element directly and never touches this GPU-upload flag) —
+    // which is exactly why hand tracking was never actually broken, only the
+    // background was, and why routing the fix through frameMap.rotation
+    // instead (a per-device correction meant for a genuinely rotated sensor)
+    // dragged hand tracking into the same, unrelated correction.
+    this.texture.flipY = false;
 
     this.ready = true;
     return this;

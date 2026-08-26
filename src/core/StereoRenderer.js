@@ -246,6 +246,12 @@ export class StereoRenderer {
     this.resize();
   }
 
+  /**
+   * @param {THREE.Texture} texture Must have `flipY = false` (see
+   *   CameraFeed's video texture setup) — BACKGROUND_FRAG's manual UV math
+   *   assumes video-normalised space (v=0 at the top of the decoded frame),
+   *   which a flipY=true upload contradicts and samples upside down.
+   */
   setVideoTexture(texture, { mirrored = false } = {}) {
     this.bgUniforms.uVideo.value = texture;
     this.bgUniforms.uHasVideo.value = texture ? 1 : 0;

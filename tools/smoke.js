@@ -142,10 +142,15 @@ async function main() {
       stereo: window.ARFIGHT.renderer.stereo,
       videoW: window.ARFIGHT.cameraFeed.width,
       videoH: window.ARFIGHT.cameraFeed.height,
+      videoFlipY: window.ARFIGHT.cameraFeed.texture?.flipY,
       pointerFallback: window.ARFIGHT.hands === window.ARFIGHT.pointerHand,
     }));
     check(boot.videoW > 0 && boot.videoH > 0, 'camera reports a frame size',
       `got ${boot.videoW}x${boot.videoH}`);
+    // BACKGROUND_FRAG's UV math assumes flipY=false (see CameraFeed) — the
+    // default (true) silently renders passthrough upside down for everyone,
+    // on every device, regardless of any rotation/mirror setting.
+    check(boot.videoFlipY === false, 'video texture has flipY disabled to match the background shader');
     check(boot.stereo === true, 'starts in stereo headset mode');
     check(['check', 'draw'].includes(boot.state), 'reaches an interactive state',
       `state=${boot.state}`);
