@@ -17,7 +17,7 @@ No app store, no build step, no accounts. Serve the folder and open it.
 | Step | What you do |
 | --- | --- |
 | **1. Check** | Hold a hand up. When the cursor lands on your fingertips, pinch once — that also calibrates your reach. |
-| **2. Draw** | Pinch thumb and index together and move your hand. Each pinch-and-release is one stroke. Draw a pistol, a sword, a hammer, whatever you like. |
+| **2. Draw** | Pinch thumb and index together and move your hand. Each pinch-and-release is one stroke. Draw a pistol, a sword, a hammer, whatever you like. Mid-air drawing tiring to hold steady? Draw the outline on paper instead, hold it up to the camera, and give a thumbs up — each dark shape on the page becomes a stroke, same as pinch-drawing it. |
 | **3. Classify** | Look at **GUN** or **MELEE** and hold your gaze, or reach out and poke the button. |
 | **4. Tag** | Point at your own drawing and pinch to mark each part. Gun: **grip → trigger → muzzle**. Melee: **grip → striking edge**. |
 | **5. Fight** | The weapon snaps into your hand. Guns fire from the muzzle you marked when you curl your index finger. Melee weapons hit with the edge you marked, if you swing hard enough. Targets orbit around you. |
@@ -281,6 +281,13 @@ leave the phone; there is no backend to send them to.
   Orientation Lock API that does this on Android simply isn't implemented in
   Safari — Apple's choice, not something fixable here. On iPhone, the phone's
   own rotation-lock toggle being off is a hard requirement, not a suggestion.
+- **Paper tracing wants dark ink on a plain, well-lit page.** `PaperTrace`
+  finds shapes by threshold + contour, not object recognition — it has no
+  idea "paper" is involved at all, just that some region of the frame is
+  clearly darker than its surroundings. A cluttered background, a shiny pen,
+  or dim light can all mean nothing is found (it fails honestly rather than
+  guessing); there is also no on-screen framing guide yet, so the drawing
+  needs to fill most of the frame on its own.
 
 ## Licence
 

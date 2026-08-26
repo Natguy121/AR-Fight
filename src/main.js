@@ -12,6 +12,7 @@ import { HandSet } from './hands/HandSet.js';
 import { PointerHand } from './hands/PointerHand.js';
 
 import { DrawingSession } from './draw/DrawingSession.js';
+import * as PaperTrace from './draw/PaperTrace.js';
 import { Weapon } from './weapon/Weapon.js';
 import { WeaponRig } from './weapon/WeaponRig.js';
 import { GunBehavior } from './weapon/GunBehavior.js';
@@ -119,6 +120,12 @@ class ARFight {
     this._stereoCalibrating = false;
     /** Saved stereo cal before entering calibration mode, for undo. */
     this._stereoCalBackup = null;
+
+    /** Continuous thumbs-up hold time this frame streak, ms; see _updatePaperCapture. */
+    this._paperHoldMs = 0;
+    /** Cooldown after a capture attempt, ms, so the same held gesture cannot refire instantly. */
+    this._paperCooldownMs = 0;
+    this._paperStatusTimer = null;
 
     this._bindUI();
     this._updateFlipButton();
@@ -565,7 +572,7 @@ class ARFight {
         this._updateCheck(hand);
         break;
       case State.DRAW:
-        this._updateDraw(hand);
+        this._updateDraw(hand, dt);
         break;
       case State.CATEGORIZE:
         break;
@@ -623,7 +630,7 @@ class ARFight {
     this.fsm.go(State.DRAW);
   }
 
-  _updateDraw(hand) {
+  _updateDraw(hand, dt) {
     const pinching = !!hand?.visible && hand.pinching;
     // A pinch the UI has already claimed as a button press must not also lay
     // down a stroke — otherwise pressing DONE scribbles on the way out.
@@ -646,6 +653,107 @@ class ARFight {
     // also stop the UI seeing the pinch meant to press a button.
     this.ui.visible = !this.drawing.active;
     this._prevPinch = pinching;
+
+    this._updatePaperCapture(dt);
+  }
+
+  /**
+   * Alternative to pinch-drawing: hold a pen-and-paper outline up to the
+   * camera and give a thumbs up. A hold (not just an instant flag check) so
+   * the gesture has to be deliberate — this replaces whatever was drawn and
+   * jumps straight to categorize, unlike a stray one-frame misread of a
+   * pinch, which just does nothing.
+   *
+   * Checks both tracked hands, not just `this.hands.primary` — the realistic
+   * shape of this gesture is one hand holding the paper (visible, but not
+   * pinching or otherwise "primary") while the other thumbs-up, and
+   * `HandSet` has no reason to promote a non-pinching thumbs-up hand to
+   * primary over whichever hand it already favours.
+   */
+  _updatePaperCapture(dt) {
+    if (this._paperCooldownMs > 0) {
+      this._paperCooldownMs -= dt * 1000;
+      return;
+    }
+    // Don't fight a live mid-air stroke for the same hand's gesture state.
+    const thumbsHand = !this.drawing.active
+      && [this.hands.primary, this.hands.secondary].find((h) => h?.visible && h.thumbsUp);
+    if (!thumbsHand) {
+      this._paperHoldMs = 0;
+      return;
+    }
+    this._paperHoldMs += dt * 1000;
+    if (this._paperHoldMs < config.paperTrace.holdMs) return;
+
+    this._paperHoldMs = 0;
+    this._paperCooldownMs = config.paperTrace.cooldownMs;
+    this._capturePaperDrawing();
+  }
+
+  /** Lift a captured-frame pixel (video-normalised u,v) into world space, at
+   * the assumed paper distance — same construction HandPose uses for
+   * landmarks, so a traced shape sits consistently with everything else. */
+  _paperPointTo3D(u, v, out) {
+    this.frameMap.unproject(u, v, config.paperTrace.depth, out);
+    return out.applyQuaternion(this.head.quaternion).add(this.head.position);
+  }
+
+  _capturePaperDrawing() {
+    const imageData = PaperTrace.captureFrame(this.cameraFeed.video, config.paperTrace.captureMaxWidth);
+    if (!imageData) return;
+
+    const { shapes, reason } = PaperTrace.extractShapes(imageData, config.paperTrace);
+    if (!shapes.length) {
+      this.sound.cancel();
+      this._flashDrawStatus(
+        "Couldn't find a drawing",
+        reason === 'low-contrast'
+          ? 'Hold it closer, or find better light.'
+          : "Make sure it's dark ink on plain paper, filling most of the frame.",
+      );
+      return;
+    }
+
+    this.drawing.clear();
+    for (const shape of shapes) {
+      this.drawing.beginStroke();
+      for (const p of shape.points) {
+        this.drawing.addPoint(this._paperPointTo3D(p.u, p.v, _paperPoint));
+      }
+      // Re-visit the first point so the traced outline reads as one closed
+      // shape rather than a tube with its two ends left hanging open.
+      if (shape.points.length > 1) {
+        const first = shape.points[0];
+        this.drawing.addPoint(this._paperPointTo3D(first.u, first.v, _paperPoint));
+      }
+      this.drawing.endStroke();
+    }
+
+    if (this.drawing.isEmpty) {
+      this._flashDrawStatus('Too small to use', 'Try drawing it bigger on the page.');
+      return;
+    }
+
+    this.sound.confirm();
+    this._finishDrawing();
+  }
+
+  /** Temporary prompt message, restored to the normal draw prompt after a beat. */
+  _flashDrawStatus(title, detail) {
+    this.ui.setPrompt(title, detail, 'error');
+    this._syncStatusFromUI();
+    clearTimeout(this._paperStatusTimer);
+    this._paperStatusTimer = setTimeout(() => {
+      if (this.fsm.is(State.DRAW)) this._refreshDrawButtons();
+    }, 2200);
+  }
+
+  /** Drawing -> categorize, however the sketch was produced (pinch or paper). */
+  _finishDrawing() {
+    if (this.drawing.isEmpty) return;
+    this.weapon = new Weapon(this.drawing);
+    this.scene.add(this.weapon.markers);
+    this.fsm.go(State.CATEGORIZE);
   }
 
   _refreshDrawButtons() {
@@ -663,7 +771,7 @@ class ARFight {
       has ? 'Keep drawing, or finish' : 'Draw your weapon',
       has
         ? `${this.drawing.strokes.length} stroke${this.drawing.strokes.length === 1 ? '' : 's'}. Pinch to add more, or press DONE.`
-        : 'Pinch and move your hand to draw in the air. Release to end a stroke.',
+        : 'Pinch and move your hand to draw in the air — or hold up a paper drawing and give a thumbs up.',
     );
     this._syncStatusFromUI();
   }
@@ -858,9 +966,7 @@ class ARFight {
       case 'done-draw':
         if (this.drawing.isEmpty) return;
         this.sound.confirm();
-        this.weapon = new Weapon(this.drawing);
-        this.scene.add(this.weapon.markers);
-        this.fsm.go(State.CATEGORIZE);
+        this._finishDrawing();
         break;
 
       case 'cat-gun':
@@ -1048,6 +1154,7 @@ class ARFight {
 }
 
 const _matrix = new THREE.Matrix4();
+const _paperPoint = new THREE.Vector3();
 
 // Surface module-level failures on the gate rather than leaving a black screen.
 try {

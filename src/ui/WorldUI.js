@@ -190,7 +190,9 @@ class UIPrompt extends CanvasQuad {
     roundRect(ctx, 0, 0, w, h, h * 0.16);
     ctx.fill();
     ctx.strokeStyle =
-      this.tone === 'success' ? 'rgba(139,245,160,0.5)' : 'rgba(255,255,255,0.16)';
+      this.tone === 'success' ? 'rgba(139,245,160,0.5)'
+      : this.tone === 'error' ? 'rgba(255,107,107,0.5)'
+      : 'rgba(255,255,255,0.16)';
     ctx.lineWidth = w * 0.004;
     ctx.stroke();
 
@@ -201,7 +203,8 @@ class UIPrompt extends CanvasQuad {
     let y = pad;
     if (this.title) {
       ctx.font = `700 ${h * 0.2}px ${FONT}`;
-      ctx.fillStyle = this.tone === 'success' ? '#8bf5a0' : '#ffffff';
+      ctx.fillStyle =
+        this.tone === 'success' ? '#8bf5a0' : this.tone === 'error' ? '#ff6b6b' : '#ffffff';
       for (const line of wrapText(ctx, this.title, w - pad * 2)) {
         ctx.fillText(line, w / 2, y);
         y += h * 0.24;

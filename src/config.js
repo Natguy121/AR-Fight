@@ -165,6 +165,44 @@ export const config = {
     palette: [0x5ac8fa, 0xffd166, 0xff6b6b, 0x8bf5a0, 0xc792ea, 0xffa94d],
   },
 
+  /**
+   * Paper tracing: draw the weapon outline with a pen instead of mid-air.
+   * Hold the drawing up to the camera and give a thumbs up; each dark shape
+   * found on it becomes a stroke, same as if it had been pinch-drawn.
+   */
+  paperTrace: {
+    /** How long a steady thumbs-up must hold before it fires, in ms — long
+     * enough that it reads as deliberate (this ends the draw step outright,
+     * unlike the fast gesture debounces used for pinch/trigger). */
+    holdMs: 550,
+    /** After a capture attempt (successful or not), ignore thumbs-up for
+     * this long — otherwise the same held gesture immediately re-fires. */
+    cooldownMs: 1200,
+    /** Distance in front of the viewer the drawing is assumed to be held at,
+     * metres. Only affects the drawing's initial apparent size (exactly like
+     * getting the camera FOV estimate wrong does, per `camera` above) — hold
+     * the paper closer or farther to make the traced shape bigger or
+     * smaller, the same intuitive control mid-air drawing already has. */
+    depth: 0.4,
+    /** Longest edge the captured frame is downscaled to before processing.
+     * Contour tracing is O(pixels); this is plenty of resolution for a
+     * pen outline while keeping it fast on a phone. */
+    captureMaxWidth: 360,
+    /** At most this many separate ink shapes become strokes, largest first. */
+    maxContours: 6,
+    /** Reject a shape smaller than this fraction of the frame, as noise. */
+    minAreaFraction: 0.002,
+    /** Reject a shape covering more than this fraction of the frame — most
+     * likely the whole page (or a shadow) got thresholded as one blob. */
+    maxAreaFraction: 0.9,
+    /** Douglas-Peucker simplification tolerance, in source pixels. */
+    simplifyEpsilonPx: 2,
+    /** Minimum grey-value standard deviation across the frame. Below this
+     * there is no real edge to threshold — blank paper, a lens cap, or bad
+     * light — so bail out honestly rather than reporting noise as a shape. */
+    minContrast: 12,
+  },
+
   /** Anchor tagging. */
   tagging: {
     /** Fingertip must be within this radius (m) of a stroke sample to snap. */

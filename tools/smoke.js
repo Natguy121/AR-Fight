@@ -534,6 +534,48 @@ async function main() {
     check(restarted.strokes === 0, 'restart clears the sketch');
     check(restarted.weapon === null, 'restart releases the weapon');
 
+    // --- Paper tracing: the whole gesture-hold -> capture -> convert path,
+    // exercised against the real (fake-device) camera frame. The exact
+    // shapes Chromium's synthetic test pattern happens to contain are not
+    // asserted on — that is what the PaperTrace unit tests pin down with
+    // controlled pixel data — only that holding the gesture for less than
+    // the required time does nothing, and holding it long enough drives the
+    // app to one well-defined outcome or the other without throwing.
+    console.log('\nPaper trace');
+    const heldTooShort = await page.evaluate(async () => {
+      const app = window.ARFIGHT;
+      app.pointerHand.thumbsUp = true;
+      await new Promise((r) => setTimeout(r, 150));
+      app.pointerHand.thumbsUp = false;
+      await new Promise((r) => setTimeout(r, 50));
+      return { state: app.fsm.current, strokes: app.drawing.strokes.length };
+    });
+    check(heldTooShort.state === 'draw' && heldTooShort.strokes === 0,
+      'a thumbs-up held under the threshold does nothing',
+      JSON.stringify(heldTooShort));
+
+    const holdMs = await page.evaluate(() => window.ARFIGHT_CONFIG.paperTrace.holdMs);
+    const held = await page.evaluate(async (ms) => {
+      const app = window.ARFIGHT;
+      app.pointerHand.thumbsUp = true;
+      await new Promise((r) => setTimeout(r, ms + 250));
+      app.pointerHand.thumbsUp = false;
+      return {
+        state: app.fsm.current,
+        strokes: app.drawing.strokes.length,
+        promptTitle: app.ui.prompt.title,
+      };
+    }, holdMs);
+    const capturedWeapon = held.state === 'categorize' && held.strokes > 0;
+    const reportedNothingFound = held.state === 'draw' && held.strokes === 0 && !!held.promptTitle;
+    check(capturedWeapon || reportedNothingFound,
+      'a sustained thumbs-up either captures a weapon or reports nothing found',
+      JSON.stringify(held));
+
+    // However that landed, get back to a clean draw state for the shot below.
+    await page.evaluate(() => window.ARFIGHT._startNewWeapon());
+    await page.waitForTimeout(150);
+
     if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '3-mono.png') });
 
     // --- Nothing should have thrown along the way.

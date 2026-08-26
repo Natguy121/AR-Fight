@@ -67,6 +67,9 @@ export class HandPose {
     this.indexCurlDeg = 180;
     this.triggerPulled = false;
     this.pointing = false;
+    /** Fist with the thumb stuck out: a deliberate "confirm" shape, distinct
+     * from pinch/point, used to capture a paper drawing without a button. */
+    this.thumbsUp = false;
 
     // Velocity of the pinch point, world space, m/s.
     this.velocity = new THREE.Vector3();
@@ -80,6 +83,7 @@ export class HandPose {
     this._initFilters();
     this._pinchHold = 0;
     this._triggerHold = 0;
+    this._thumbsUpHold = 0;
   }
 
   _initFilters() {
@@ -101,8 +105,10 @@ export class HandPose {
     this._hasPrev = false;
     this._pinchHold = 0;
     this._triggerHold = 0;
+    this._thumbsUpHold = 0;
     this.pinching = false;
     this.triggerPulled = false;
+    this.thumbsUp = false;
     for (let i = 0; i < 21; i++) {
       this._uFilters[i].reset();
       this._vFilters[i].reset();
@@ -418,6 +424,40 @@ export class HandPose {
       _vecFrom(world[LM.MIDDLE_TIP], _tmpC),
     );
     this.pointing = this.indexCurlDeg > 150 && middleCurl < 130;
+
+    // Thumbs up: a fist (four fingers curled) with the thumb straight and
+    // sticking out well clear of the curled fingertips. Not direction-tested
+    // against gravity/up — "curled fist, thumb out" is already distinctive
+    // enough from pinch/point/open-hand, and skipping that check means it
+    // reads the same whichever way the hand happens to be turned while
+    // holding up a paper drawing.
+    const ringCurl = angleAt(
+      _vecFrom(world[LM.RING_MCP], _tmpA),
+      _vecFrom(world[LM.RING_PIP], _tmpB),
+      _vecFrom(world[LM.RING_TIP], _tmpC),
+    );
+    const pinkyCurl = angleAt(
+      _vecFrom(world[LM.PINKY_MCP], _tmpA),
+      _vecFrom(world[LM.PINKY_PIP], _tmpB),
+      _vecFrom(world[LM.PINKY_TIP], _tmpC),
+    );
+    const thumbStraightDeg = angleAt(
+      _vecFrom(world[LM.THUMB_MCP], _tmpA),
+      _vecFrom(world[LM.THUMB_IP], _tmpB),
+      _vecFrom(world[LM.THUMB_TIP], _tmpC),
+    );
+    _curledCentroid
+      .copy(world[LM.INDEX_TIP]).add(world[LM.MIDDLE_TIP])
+      .add(world[LM.RING_TIP]).add(world[LM.PINKY_TIP])
+      .multiplyScalar(0.25);
+    const thumbClear = distance3(world[LM.THUMB_TIP], _curledCentroid) > 0.5 * this.handScale;
+    const fourCurled = this.indexCurlDeg < 130 && middleCurl < 130 && ringCurl < 130 && pinkyCurl < 130;
+    const wantThumbsUp = fourCurled && thumbStraightDeg > 140 && thumbClear;
+    this._thumbsUpHold = wantThumbsUp === this.thumbsUp ? 0 : this._thumbsUpHold + dtMs;
+    if (this._thumbsUpHold >= debounceMs) {
+      this.thumbsUp = wantThumbsUp;
+      this._thumbsUpHold = 0;
+    }
   }
 
   _updateVelocity(dt) {
@@ -462,6 +502,7 @@ const _r3 = new THREE.Vector3();
 const _tmpA = new THREE.Vector3();
 const _tmpB = new THREE.Vector3();
 const _tmpC = new THREE.Vector3();
+const _curledCentroid = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 
 function distance3(a, b) {

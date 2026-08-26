@@ -39,6 +39,7 @@ export class PointerHand {
     this.pinching = false;
     this.triggerPulled = false;
     this.pointing = true;
+    this.thumbsUp = false;
     this.pinchRatio = 1;
     this.indexCurlDeg = 180;
     this.missingFrames = 0;
@@ -103,9 +104,13 @@ export class PointerHand {
     // Space bar doubles as the trigger, so guns are testable without a hand.
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space') { this.triggerPulled = true; e.preventDefault(); }
+      // 'T' doubles as thumbs-up, so paper-capture is testable without a
+      // hand — same reasoning as the space-bar trigger above.
+      if (e.code === 'KeyT') { this.thumbsUp = true; e.preventDefault(); }
     });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') this.triggerPulled = false;
+      if (e.code === 'KeyT') this.thumbsUp = false;
     });
   }
 

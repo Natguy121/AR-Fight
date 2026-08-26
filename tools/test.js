@@ -23,6 +23,7 @@ import { OneEuroFilter } from '../src/util/OneEuroFilter.js';
 import { HandPose } from '../src/hands/HandPose.js';
 import { LM } from '../src/hands/HandTracker.js';
 import { DrawingSession } from '../src/draw/DrawingSession.js';
+import * as PaperTrace from '../src/draw/PaperTrace.js';
 import { Weapon } from '../src/weapon/Weapon.js';
 import { WeaponRig } from '../src/weapon/WeaponRig.js';
 import { Projectiles } from '../src/fx/Projectiles.js';
@@ -678,6 +679,35 @@ test('pinch and trigger gestures fire from the metric model', () => {
   assert.equal(curlPose.triggerPulled, true, 'curled index should pull the trigger');
 });
 
+test('thumbs up fires for a fist with the thumb out, not for an open hand', () => {
+  const map = makeFrameMap();
+
+  const open = synthesiseDetection(buildHandModel(), new THREE.Quaternion(), 0.45, map);
+  const openPose = settle(new HandPose(), open, map);
+  assert.equal(openPose.thumbsUp, false, 'an open hand should not read as thumbs up');
+
+  // Curl all four fingers into a fist; the model's thumb is already
+  // reasonably straight and clear of the palm, same as a natural thumbs-up.
+  let fist = buildHandModel();
+  fist = curlFinger(fist, LM.INDEX_PIP, LM.INDEX_DIP, LM.INDEX_TIP, 100);
+  fist = curlFinger(fist, LM.MIDDLE_PIP, LM.MIDDLE_DIP, LM.MIDDLE_TIP, 100);
+  fist = curlFinger(fist, LM.RING_PIP, LM.RING_DIP, LM.RING_TIP, 100);
+  fist = curlFinger(fist, LM.PINKY_PIP, LM.PINKY_DIP, LM.PINKY_TIP, 100);
+  const fistDet = synthesiseDetection(fist, new THREE.Quaternion(), 0.45, map);
+  const fistPose = settle(new HandPose(), fistDet, map);
+  assert.equal(fistPose.thumbsUp, true, 'a fist with the thumb out should read as thumbs up');
+
+  // Curling the thumb in too (a plain closed fist) must not still count.
+  // Tucking the tip in against the curled fingers, rather than bending it
+  // at the IP joint, fails *both* the straightness and the clear-of-the-
+  // fist checks at once — a more realistic "closed fist" than either alone.
+  const closed = fist.map((v) => v.clone());
+  closed[LM.THUMB_TIP].copy(closed[LM.INDEX_MCP]).lerp(closed[LM.INDEX_TIP], 0.4);
+  const closedDet = synthesiseDetection(closed, new THREE.Quaternion(), 0.45, map);
+  const closedPose = settle(new HandPose(), closedDet, map);
+  assert.equal(closedPose.thumbsUp, false, 'a fully closed fist should not read as thumbs up');
+});
+
 // ---------------------------------------------------------------------------
 group('DrawingSession');
 
@@ -1048,6 +1078,115 @@ test('re-entering the same state is a no-op', () => {
   fsm.tick(1.5);
   assert.equal(fsm.go(State.CHECK), false);
   near(fsm.elapsed, 1.5, 1e-9, 'elapsed not reset');
+});
+
+// ---------------------------------------------------------------------------
+group('PaperTrace');
+
+test('otsuThreshold splits a bimodal histogram between its two peaks', () => {
+  const gray = new Float32Array(200);
+  for (let i = 0; i < 100; i++) gray[i] = 30; // ink
+  for (let i = 100; i < 200; i++) gray[i] = 220; // paper
+  const t = PaperTrace.otsuThreshold(gray);
+  assert.ok(t > 30 && t < 220, `threshold ${t} should sit strictly between the two classes`);
+});
+
+test('labelComponents + traceComponentBoundary recover a filled square exactly', () => {
+  const width = 5, height = 5;
+  const mask = new Uint8Array(width * height);
+  // A 3x3 filled block occupying pixel columns/rows 1..3.
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 3; x++) mask[y * width + x] = 1;
+  }
+  const { labels, components } = PaperTrace.labelComponents(mask, width, height);
+  assert.equal(components.length, 1, 'one connected component');
+  assert.equal(components[0].area, 9, '3x3 block is 9 pixels');
+
+  const boundary = PaperTrace.traceComponentBoundary(labels, width, height, components[0].id);
+  assert.equal(boundary.length, 12, 'perimeter of a 3x3 block is 12 unit edges');
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of boundary) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  assert.deepEqual([minX, maxX, minY, maxY], [1, 4, 1, 4], 'boundary spans corners (1,1) to (4,4)');
+});
+
+test('simplifyClosedContour collapses a blocky boundary down to its corners', () => {
+  const width = 20, height = 20;
+  const mask = new Uint8Array(width * height);
+  for (let y = 4; y <= 14; y++) {
+    for (let x = 4; x <= 14; x++) mask[y * width + x] = 1;
+  }
+  const { labels, components } = PaperTrace.labelComponents(mask, width, height);
+  const boundary = PaperTrace.traceComponentBoundary(labels, width, height, components[0].id);
+  const simplified = PaperTrace.simplifyClosedContour(boundary, 1);
+  assert.ok(
+    simplified.length < boundary.length / 2,
+    `simplified (${simplified.length}) should be much shorter than raw (${boundary.length})`,
+  );
+  assert.ok(simplified.length <= 8, `a square needs very few points, got ${simplified.length}`);
+});
+
+/** A flat RGBA buffer duck-typed like a canvas ImageData. */
+function makeImage(width, height, fill) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const [r, g, b] = fill(i % width, (i / width) | 0);
+    const o = i * 4;
+    data[o] = r; data[o + 1] = g; data[o + 2] = b; data[o + 3] = 255;
+  }
+  return { data, width, height };
+}
+
+test('extractShapes finds a dark rectangle drawn on a light page', () => {
+  const width = 60, height = 60;
+  const image = makeImage(width, height, (x, y) => {
+    const ink = x >= 15 && x < 45 && y >= 20 && y < 40;
+    return ink ? [20, 20, 20] : [235, 235, 235];
+  });
+  const { shapes, reason } = PaperTrace.extractShapes(image, {
+    minAreaFraction: 0.01,
+    maxAreaFraction: 0.9,
+    simplifyEpsilonPx: 1.5,
+    minContrast: 5,
+    maxContours: 6,
+  });
+  assert.equal(reason, 'ok');
+  assert.equal(shapes.length, 1, 'exactly one ink shape');
+
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const p of shapes[0].points) {
+    minU = Math.min(minU, p.u); maxU = Math.max(maxU, p.u);
+    minV = Math.min(minV, p.v); maxV = Math.max(maxV, p.v);
+  }
+  near(minU, 15 / width, 0.03, 'left edge');
+  near(maxU, 45 / width, 0.03, 'right edge');
+  near(minV, 20 / height, 0.03, 'top edge');
+  near(maxV, 40 / height, 0.03, 'bottom edge');
+});
+
+test('extractShapes reports low-contrast instead of inventing a shape from noise', () => {
+  const width = 40, height = 40;
+  const image = makeImage(width, height, () => [200, 200, 200]);
+  const { shapes, reason } = PaperTrace.extractShapes(image, { minContrast: 12 });
+  assert.equal(shapes.length, 0, 'a blank frame has no shapes');
+  assert.equal(reason, 'low-contrast');
+});
+
+test('extractShapes ignores a shape that fills almost the whole frame', () => {
+  // A near-full-frame dark blob (e.g. a shadow, or the page itself lit
+  // wrong) is exactly the failure mode maxAreaFraction exists to reject.
+  const width = 40, height = 40;
+  const image = makeImage(width, height, (x, y) => {
+    const border = x < 2 || y < 2 || x >= width - 2 || y >= height - 2;
+    return border ? [230, 230, 230] : [20, 20, 20];
+  });
+  // The dark interior is 36x36 of a 40x40 frame (~81%) — comfortably above
+  // this cap, so the rejection is actually being exercised.
+  const { shapes } = PaperTrace.extractShapes(image, { maxAreaFraction: 0.7, minContrast: 5 });
+  assert.equal(shapes.length, 0, 'a near-full-frame blob should be rejected as noise, not a weapon outline');
 });
 
 // ---------------------------------------------------------------------------
