@@ -120,6 +120,7 @@ class ARFight {
     this._stereoCalBackup = null;
 
     this._bindUI();
+    this._updateFlipButton();
   }
 
   // ---------------------------------------------------------------- start-up
@@ -236,10 +237,13 @@ class ARFight {
    * portrait-shaped is almost certainly one of these frozen streams.
    *
    * This can only pick a shape match, not a direction — a 90° and a -90°
-   * frame look identically "sideways" from the aspect ratio alone. It
-   * defaults to a clockwise turn; `btn-fliprot` is the guaranteed fix on the
-   * devices where that guess is backwards, and once tapped this stops
-   * overriding the player's own choice.
+   * frame look identically "sideways" from the aspect ratio alone, and a
+   * frame that is landscape-shaped but upside down (180° off) is
+   * indistinguishable from a correct one by shape at all, so that case is
+   * never auto-corrected either way. It defaults to a clockwise turn;
+   * `btn-fliprot` is the guaranteed fix on whichever of these the guess gets
+   * wrong — tap it repeatedly to step through 0/90/180/270° — and once
+   * tapped this stops overriding the player's own choice.
    */
   _autoDetectVideoRotation() {
     if (this._videoRotationManual || !this.cameraFeed.ready) return;
@@ -253,6 +257,26 @@ class ARFight {
     this.videoRotation = ((Math.round(quarterTurnsClockwise) % 4) + 4) % 4;
     this.frameMap.setRotation(this.videoRotation);
     this.renderer.syncFrameMap();
+    this._updateFlipButton();
+  }
+
+  /**
+   * Keep the flip button's label/title in sync with the actual correction
+   * applied. The auto-guess can only tell "sideways" from "already
+   * landscape-shaped" — a landscape stream that is upside down (180°, e.g.
+   * the phone's camera is mounted rotated relative to its "up") looks
+   * identically landscape-shaped and is indistinguishable from correct by
+   * aspect ratio alone, so it is never auto-corrected. A static "90°" label
+   * only advertises a single 90° nudge, which does nothing useful from that
+   * state — showing the degrees actually applied, and inviting further taps,
+   * is what makes "keep tapping" discoverable for the 180° case too.
+   */
+  _updateFlipButton() {
+    const deg = this.videoRotation * 90;
+    this.dom.btnFlipVideo.textContent = `${deg}°`;
+    this.dom.btnFlipVideo.title =
+      `Camera background sideways or upside down? Tap to rotate it another 90° ` +
+      `(currently ${deg}° — keep tapping until it looks right).`;
   }
 
   /**

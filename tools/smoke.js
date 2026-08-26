@@ -416,9 +416,18 @@ async function main() {
     // change what the shader samples, and the render loop must keep running.
     const rotate = await page.evaluate(() => {
       const app = window.ARFIGHT;
+      const btn = document.getElementById('btn-fliprot');
       const before = app.videoRotation;
       const wasManual = app._videoRotationManual;
-      document.getElementById('btn-fliprot').click();
+      const labelBefore = btn.textContent;
+      btn.click();
+      const labelAfter = btn.textContent;
+      // A landscape-shaped-but-180°-off stream is indistinguishable from a
+      // correct one by aspect ratio alone (see _autoDetectVideoRotation), so
+      // it can only ever be fixed by the player tapping through to 180° —
+      // the label has to actually show that state, or there is no way to
+      // tell the second tap did anything.
+      btn.click();
       return {
         before,
         after: app.videoRotation,
@@ -426,14 +435,23 @@ async function main() {
         wasManual,
         frameMapRotation: app.frameMap.rotation,
         shaderUniform: app.renderer.bgUniforms.uVideoRotation.value,
+        labelBefore,
+        labelAfter,
+        labelAfterTwoTaps: btn.textContent,
       };
     });
     check(rotate.wasManual === false, 'rotation starts on the auto-guess');
-    check(rotate.after === (rotate.before + 1) % 4, 'tapping the button advances by one turn',
+    check(rotate.labelBefore === `${rotate.before * 90}°`, 'flip button label matches the starting rotation',
+      `${rotate.labelBefore} for ${rotate.before}`);
+    check(rotate.after === (rotate.before + 2) % 4, 'tapping the button twice advances by two turns',
       `${rotate.before} -> ${rotate.after}`);
     check(rotate.manualAfter === true, 'tapping the button marks the choice as manual');
     check(rotate.frameMapRotation === rotate.after, 'VideoFrameMap picks up the new rotation');
     check(rotate.shaderUniform === rotate.after, 'the shader uniform matches it');
+    check(rotate.labelAfter === `${((rotate.before + 1) % 4) * 90}°`, 'flip button label updates after the first tap',
+      rotate.labelAfter);
+    check(rotate.labelAfterTwoTaps === `${rotate.after * 90}°`, 'flip button label reflects the rotation after two taps',
+      rotate.labelAfterTwoTaps);
 
     await page.waitForTimeout(250);
     const afterRotate = await page.evaluate(() => ({
