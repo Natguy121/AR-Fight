@@ -16,6 +16,11 @@
   }
 }
 </script>
+<!-- WebRTC signalling for versus mode (NetSession). Loaded as a plain global
+     (window.Peer), not an import, since PeerJS ships as a UMD bundle. Only
+     used to establish the connection via its free public broker — once two
+     phones are connected, gameplay data goes peer-to-peer, not through it. -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -25,9 +30,60 @@
 
 <canvas id="view"></canvas>
 
+<!-- First screen: solo or a remote 1v1. Versus mode establishes the
+     connection here, before the camera gate — no point asking for camera
+     permission if the match never connects. -->
+<div id="lobby" class="overlay">
+  <div class="gate-card">
+    <h1>AR&#8209;Fight</h1>
+    <p class="tagline">Draw a weapon. Then use it &mdash; alone, or against a friend.</p>
+
+    <div id="lobby-mode">
+      <div class="btn-row">
+        <button id="lobby-solo" class="btn-primary" type="button">Play solo</button>
+        <button id="lobby-versus" class="btn-secondary" type="button">Duel a friend</button>
+      </div>
+    </div>
+
+    <div id="lobby-versus-mode" hidden>
+      <p class="hint">
+        You'll each be in your own room &mdash; there's no shared space to
+        stand in, so your opponent appears as a fixed avatar in front of you,
+        wielding whatever they drew.
+      </p>
+      <div class="btn-row">
+        <button id="lobby-host" class="btn-secondary" type="button">Host</button>
+        <button id="lobby-join" class="btn-secondary" type="button">Join</button>
+      </div>
+      <button id="lobby-back-mode" class="btn-text" type="button">&larr; Back</button>
+    </div>
+
+    <div id="lobby-hosting" hidden>
+      <p class="hint">Send your friend this code:</p>
+      <div id="lobby-room-code">&hellip;</div>
+      <p class="hint" id="lobby-host-status">Setting up&hellip;</p>
+      <button id="lobby-cancel-host" class="btn-text" type="button">&larr; Cancel</button>
+    </div>
+
+    <div id="lobby-joining" hidden>
+      <p class="hint">Enter your friend's code:</p>
+      <input
+        id="lobby-code-input" class="code-input" type="text"
+        inputmode="text" autocapitalize="characters" autocomplete="off"
+        spellcheck="false" placeholder="ABCDE"
+      />
+      <button id="lobby-connect" class="btn-primary" type="button">Connect</button>
+      <p class="hint" id="lobby-join-status"></p>
+      <button id="lobby-cancel-join" class="btn-text" type="button">&larr; Back</button>
+    </div>
+
+    <p class="error" id="lobby-error" hidden></p>
+  </div>
+</div>
+
 <!-- Pre-flight screen. Camera and motion permissions must be requested from a
      real user gesture, so everything starts behind this button. -->
-<div id="gate" class="overlay">
+<div id="gate" class="overlay" hidden>
   <div class="gate-card">
     <h1>AR&#8209;Fight</h1>
     <p class="tagline">Draw a weapon in the air. Tell it what it is. Then use it.</p>
@@ -49,7 +105,7 @@
       Turn it off to hold the phone like a window.
     </p>
 
-    <button id="gate-start" type="button">Grant camera &amp; start</button>
+    <button id="gate-start" class="btn-primary" type="button">Grant camera &amp; start</button>
     <p class="error" id="gate-error" hidden></p>
     <p class="fineprint">
       Needs HTTPS (or localhost) for camera access. Nothing leaves the device &mdash;

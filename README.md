@@ -25,6 +25,37 @@ No app store, no build step, no accounts. Serve the folder and open it.
 At any point: **New** starts another weapon, **Re-tag** keeps the sketch but
 lets you move the points, **Targets** resets the score.
 
+## Versus mode
+
+The first screen offers **Duel a friend** alongside solo play. One of you
+taps **Host** and gets a 5-character room code; send it to the other however
+you like (text, voice call) and they tap **Join** and type it in. Once
+connected, you each go through the normal draw → classify → tag flow
+independently — the fight starts once you're both equipped.
+
+There's no shared physical space between two players in different rooms, so
+your opponent appears as a fixed avatar standing in front of wherever you
+were facing when the match started, wielding whatever they actually drew.
+Their aim and swings are real — just their position isn't, because there's
+nothing to anchor it to.
+
+Health, not the practice range's hit counter: both of you start at 100 and
+whoever runs out first loses. **Melee weapons can't swing into range of a
+remote opponent** — pinch through a fast swing and let go to throw it at
+them instead; guns work exactly like they do solo.
+
+Technical notes:
+- **Peer-to-peer, no game server.** Establishing the connection needs *some*
+  server to introduce the two phones to each other before they can talk
+  directly — this uses [PeerJS](https://peerjs.com)'s free public one, so
+  there's nothing to host or pay for. Once connected, gameplay data flows
+  directly between the two phones, not through it.
+- **Needs normal internet access on both ends.** A network that blocks
+  arbitrary outbound connections (a locked-down corporate or school Wi-Fi,
+  for instance) can prevent the connection from ever forming; home Wi-Fi and
+  cellular data are the common case and are not affected.
+- **1v1 only**, for now.
+
 ## Running it
 
 The camera only works on a secure origin, and `localhost` does not help when

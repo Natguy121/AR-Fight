@@ -21,12 +21,17 @@ import { MeleeBehavior } from './weapon/MeleeBehavior.js';
 import { WorldUI } from './ui/WorldUI.js';
 import { Reticle } from './ui/Reticle.js';
 import { HandCursor } from './ui/HandCursor.js';
+import { Lobby } from './ui/Lobby.js';
+import { HealthHUD } from './ui/HealthHUD.js';
 
 import { Environment } from './scene/Environment.js';
 import { TargetField } from './fx/Targets.js';
 import { Projectiles } from './fx/Projectiles.js';
 import { MuzzleFlash, ImpactBursts, SwingTrail } from './fx/Effects.js';
 import { Sound } from './fx/Sound.js';
+
+import { OpponentAvatar } from './net/OpponentAvatar.js';
+import { serializeWeapon } from './net/WeaponSync.js';
 
 /** Distance we assume a comfortably outstretched hand sits at, for calibration. */
 const CALIBRATION_DISTANCE = 0.45;
@@ -81,6 +86,21 @@ class ARFight {
     this.projectiles = new Projectiles();
     this.scene.add(this.projectiles.mesh);
 
+    // A second, separate pool for the opponent's incoming shots/throws: pure
+    // decoration (their client already decided whether it hit — see the
+    // `hit` message), spawned right at their avatar's own hitbox, so running
+    // them through the same collision-tested pool would just self-hit on
+    // the spawn frame. Given empty targets every update, this one never
+    // collides with anything.
+    this.opponentProjectiles = new Projectiles();
+    this.scene.add(this.opponentProjectiles.mesh);
+
+    this.opponent = new OpponentAvatar();
+    this.scene.add(this.opponent.group);
+
+    this.healthHud = new HealthHUD();
+    this.scene.add(this.healthHud.group);
+
     this.muzzleFlash = new MuzzleFlash();
     this.scene.add(this.muzzleFlash.mesh);
 
@@ -127,9 +147,60 @@ class ARFight {
     this._paperCooldownMs = 0;
     this._paperStatusTimer = null;
 
+    /** @type {import('./net/NetSession.js').NetSession|null} */
+    this.net = null;
+    /** Chosen in the lobby, before the camera gate; never changes mid-session. */
+    this.versusMode = false;
+    this.versus = ARFight._freshVersusState();
+    this._poseSendAccum = 0;
+    /** projectiles pool index -> 'gun' | 'melee', so the hit callback knows
+     * which damage/effect applies; see fire()/_throwMelee(). */
+    this._projectileKind = new Map();
+
     this._bindUI();
     this._updateFlipButton();
     this._updateMirrorButton();
+
+    // The very first screen. Nothing else here has touched the camera or
+    // asked for any permission yet, so it is safe to sit and wait — a
+    // versus connection is worth establishing before spending a permission
+    // prompt on a match that might not even connect.
+    this.lobby = new Lobby((result) => this._onLobbyDone(result));
+  }
+
+  static _freshVersusState() {
+    return {
+      /** Both sides have equipped and the fight is actually live. */
+      active: false,
+      myReady: false,
+      opponentReady: false,
+      myHealth: config.versus.maxHealth,
+      ended: false,
+      iWon: false,
+      wantRematch: false,
+      opponentWantsRematch: false,
+    };
+  }
+
+  _onLobbyDone(result) {
+    this.versusMode = result.mode === 'versus';
+    if (this.versusMode) {
+      this.net = result.net;
+      this._bindNet();
+    }
+    this.dom.gate.hidden = false;
+  }
+
+  _bindNet() {
+    const net = this.net;
+    net.onDisconnected = () => this._onOpponentDisconnected();
+    net.on('ready', (msg) => this._onOpponentReady(msg));
+    net.on('pose', (msg) => this._onOpponentPose(msg));
+    net.on('fire', () => this._onOpponentFire());
+    net.on('throw', () => this._onOpponentThrow());
+    net.on('hit', (msg) => this._onOpponentHit(msg));
+    net.on('defeated', () => this._onOpponentDefeated());
+    net.on('rematch', () => this._onOpponentRematch());
   }
 
   // ---------------------------------------------------------------- start-up
@@ -493,17 +564,175 @@ class ARFight {
 
     this.drawing.update();
     this.targets.update(dt);
-    this.projectiles.update(dt, this.targets.targets, (target, point) => {
+
+    const versusLive = this.versusMode && this.versus.active && !this.versus.ended;
+    const projectileTargets = versusLive
+      ? [...this.targets.targets, this.opponent.hitbox]
+      : this.targets.targets;
+    this.projectiles.update(dt, projectileTargets, (target, point, index) => {
+      if (target === this.opponent.hitbox) {
+        this._onLocalHitOpponent(point, index);
+        return;
+      }
       if (this.targets.hit(target)) {
         this.impacts.spawn(point, this.head.quaternion, 0xffe9a8);
         this.sound.hit();
         this._refreshEquipPrompt();
       }
     });
+    // Decorative only (see the constructor) — no targets, so nothing to hit.
+    this.opponentProjectiles.update(dt, null, null);
     this.muzzleFlash.update(dt);
     this.impacts.update(dt);
 
+    if (this.versusMode) this._updateVersus(dt);
+
     this.renderer.render(this.scene);
+  }
+
+  // ------------------------------------------------------------- versus mode
+
+  _updateVersus(dt) {
+    this.opponent.update(dt);
+
+    if (this.versus.active && !this.versus.ended) {
+      this.healthHud.setVisible(true);
+      this.healthHud.updateTransform(this.head.position, this.head.quaternion);
+      this.healthHud.render(this.versus.myHealth, this.opponent.health, config.versus.maxHealth);
+    }
+
+    if (!this.versus.active || this.versus.ended || !this.rig.attached) return;
+    this._poseSendAccum += dt;
+    const interval = 1 / config.versus.poseSendHz;
+    if (this._poseSendAccum >= interval) {
+      this._poseSendAccum = 0;
+      this._sendPose();
+    }
+  }
+
+  _sendPose() {
+    if (!this.net?.connected || !this.rig.weapon) return;
+    this.rig.weapon.root.getWorldPosition(_worldPos);
+    this.rig.weapon.root.getWorldQuaternion(_worldQuat);
+    // Relative to my own head, not world space — see WeaponSync's doc
+    // comment: there is no shared coordinate system between two separate
+    // rooms, only each player's own sense of where their head is facing.
+    _invHeadQuat.copy(this.head.quaternion).invert();
+    _relPos.subVectors(_worldPos, this.head.position).applyQuaternion(_invHeadQuat);
+    _relQuat.copy(_invHeadQuat).multiply(_worldQuat);
+    this.net.send('pose', {
+      pos: round3Vec(_relPos),
+      quat: round3Quat(_relQuat),
+    });
+  }
+
+  _onOpponentReady(msg) {
+    this.opponent.setWeapon(msg.weapon);
+    this.versus.opponentReady = true;
+    this._tryStartVersusMatch();
+  }
+
+  _tryStartVersusMatch() {
+    if (this.versus.active || !this.versus.myReady || !this.versus.opponentReady) return;
+    this.versus.active = true;
+    this.versus.myHealth = config.versus.maxHealth;
+    this.opponent.resetHealth();
+    this.opponent.place(this.head.position, this.head.quaternion);
+    this._refreshEquipPrompt();
+  }
+
+  _onOpponentPose(msg) {
+    if (!this.versus.active) return;
+    this.opponent.applyPose(msg.pos, msg.quat);
+  }
+
+  _onOpponentFire() {
+    if (!this.versus.active || !this.opponent.weapon) return;
+    this.opponent.getTipPosition(_oppTip);
+    this.opponent.weapon.getWorldForward(_oppFwd);
+    this.opponentProjectiles.fire(_oppTip, _oppFwd, config.gun.projectileSpeed);
+    this.muzzleFlash?.trigger(_oppTip, this.head.quaternion);
+  }
+
+  _onOpponentThrow() {
+    if (!this.versus.active || !this.opponent.weapon) return;
+    this.opponent.getTipPosition(_oppTip);
+    this.opponent.weapon.getWorldForward(_oppFwd);
+    this.opponentProjectiles.fire(_oppTip, _oppFwd, config.melee.throwProjectileSpeed);
+  }
+
+  /** My own shot/throw connected with their avatar in my scene — see Projectiles.update above. */
+  _onLocalHitOpponent(point, projectileIndex) {
+    const kind = this._projectileKind.get(projectileIndex) || 'gun';
+    this._projectileKind.delete(projectileIndex);
+    const damage = kind === 'melee' ? config.melee.throwDamage : config.versus.gunDamage;
+
+    this.impacts.spawn(point, this.head.quaternion, kind === 'melee' ? 0xffe74c : 0xffe9a8);
+    this.sound.hit();
+    this.net?.send('hit', { damage, kind });
+
+    // Optimistic local mirror, purely for my own health-bar display — their
+    // own client is authoritative for their own actual health.
+    this.opponent.takeDamage(damage);
+    if (!this.opponent.alive) this._endVersusMatch(true);
+  }
+
+  _onOpponentHit(msg) {
+    if (this.versus.ended) return;
+    this.versus.myHealth = Math.max(0, this.versus.myHealth - msg.damage);
+    this.impacts.spawn(this.head.position, this.head.quaternion, msg.kind === 'melee' ? 0xffe74c : 0xff6b6b);
+    this.sound.hit();
+    if (this.versus.myHealth <= 0) {
+      this.net?.send('defeated', {});
+      this._endVersusMatch(false);
+    }
+  }
+
+  _onOpponentDefeated() {
+    this._endVersusMatch(true);
+  }
+
+  _endVersusMatch(iWon) {
+    if (this.versus.ended) return;
+    this.versus.ended = true;
+    this.versus.iWon = iWon;
+    (iWon ? this.sound.confirm : this.sound.cancel)?.call(this.sound);
+    this.ui.setPrompt(
+      iWon ? 'Victory!' : 'Defeated',
+      iWon ? 'You beat them. Go again?' : 'They got you. Go again?',
+      iWon ? 'success' : 'error',
+    );
+    this.ui.setButtons([
+      { id: 'versus-rematch', label: 'Rematch', hint: 'draw again', accent: 0x8bf5a0, width: 0.34 },
+    ]);
+    this._syncStatusFromUI();
+  }
+
+  _onOpponentRematch() {
+    this.versus.opponentWantsRematch = true;
+    this._tryRestartVersusMatch();
+  }
+
+  _tryRestartVersusMatch() {
+    if (!this.versus.wantRematch || !this.versus.opponentWantsRematch) return;
+    this.versus = ARFight._freshVersusState();
+    this.opponent.reset();
+    this.healthHud.setVisible(false);
+    this._startNewWeapon();
+  }
+
+  _onOpponentDisconnected() {
+    if (this.versus.ended) return;
+    this.ui.setPrompt(
+      'Your friend disconnected',
+      'You can keep playing solo from here, or reload to start a fresh match.',
+      'error',
+    );
+    this.ui.setButtons([]);
+    this._syncStatusFromUI();
+    this.versus.active = false;
+    this.opponent.group.visible = false;
+    this.healthHud.setVisible(false);
   }
 
   // ------------------------------------------------------------- state logic
@@ -548,8 +777,14 @@ class ARFight {
         this.gun.reset();
         this.melee.reset();
         this.projectiles.clear();
+        this.opponentProjectiles.clear();
         this.swingTrail.clear();
         this._stereoCalibrating = false;
+        if (this.versusMode) {
+          this.net?.send('ready', { weapon: serializeWeapon(this.weapon) });
+          this.versus.myReady = true;
+          this._tryStartVersusMatch();
+        }
         this._refreshEquipPrompt();
         this.ui.setButtons([
           { id: 'new-weapon', label: 'New', hint: 'draw another', width: 0.25 },
@@ -853,15 +1088,27 @@ class ARFight {
     if (this.weapon?.category === 'gun') {
       if (this.gun.update(hand, nowMs, this.head.quaternion)) {
         this.sound.shot();
+        if (this.versusMode && this.versus.active) {
+          this._projectileKind.set(this.gun.lastProjectileIndex, 'gun');
+          this.net?.send('fire', {});
+        }
       }
     } else if (this.weapon?.category === 'melee') {
       const wasSwinging = this.melee.isSwinging;
-      this.melee.update(dt, this.targets, (target, point) => {
+      const thrown = this.melee.update(hand, nowMs, dt, this.targets, (target, point) => {
         this.impacts.spawn(point, this.head.quaternion, 0xffe74c);
         this.sound.hit();
         this._refreshEquipPrompt();
       });
       if (this.melee.isSwinging && !wasSwinging) this.sound.swing();
+      if (thrown) {
+        const idx = this.projectiles.fire(thrown.origin, thrown.direction, config.melee.throwProjectileSpeed);
+        this.sound.swing();
+        if (this.versusMode && this.versus.active) {
+          this._projectileKind.set(idx, 'melee');
+          this.net?.send('throw', {});
+        }
+      }
     }
 
     // The weapon is in your hand now; a cursor on top of it is just clutter.
@@ -870,12 +1117,39 @@ class ARFight {
 
   _refreshEquipPrompt() {
     if (!this.weapon) return;
+    if (this.versusMode && !this.versus.ended) {
+      this._refreshVersusEquipPrompt();
+      return;
+    }
     const isGun = this.weapon.category === 'gun';
     this.ui.setPrompt(
       `${isGun ? 'Gun' : 'Melee'} ready  —  ${this.targets.score} hit${this.targets.score === 1 ? '' : 's'}`,
       isGun
         ? 'Aim with your hand and curl your index finger to fire.'
         : 'Swing through a target. Slow taps will not connect.',
+      'success',
+    );
+    this._syncStatusFromUI();
+  }
+
+  /** Prompt text only — the button row is set once, on entering EQUIP, and
+   * left alone here so this can be called freely (e.g. after a hit) without
+   * fighting over it. */
+  _refreshVersusEquipPrompt() {
+    if (!this.versus.active) {
+      this.ui.setPrompt(
+        'Waiting for your opponent…',
+        "They're still drawing or tagging their weapon.",
+      );
+      this._syncStatusFromUI();
+      return;
+    }
+    const isGun = this.weapon.category === 'gun';
+    this.ui.setPrompt(
+      `${isGun ? 'Gun' : 'Melee'} ready — fight!`,
+      isGun
+        ? 'Aim and curl your index finger to fire.'
+        : 'Pinch through a fast swing and let go to throw it at them.',
       'success',
     );
     this._syncStatusFromUI();
@@ -996,6 +1270,15 @@ class ARFight {
 
       case 'new-weapon':
         this._startNewWeapon();
+        break;
+
+      case 'versus-rematch':
+        this.versus.wantRematch = true;
+        this.net?.send('rematch', {});
+        this.ui.setPrompt('Waiting for them to rematch…', '');
+        this.ui.setButtons([]);
+        this._syncStatusFromUI();
+        this._tryRestartVersusMatch();
         break;
 
       case 'retag':
@@ -1155,6 +1438,24 @@ class ARFight {
 
 const _matrix = new THREE.Matrix4();
 const _paperPoint = new THREE.Vector3();
+const _worldPos = new THREE.Vector3();
+const _worldQuat = new THREE.Quaternion();
+const _invHeadQuat = new THREE.Quaternion();
+const _relPos = new THREE.Vector3();
+const _relQuat = new THREE.Quaternion();
+const _oppTip = new THREE.Vector3();
+const _oppFwd = new THREE.Vector3();
+
+/** Millimetre-ish precision is plenty for a synced pose and keeps messages small. */
+function round3(n) {
+  return Math.round(n * 1000) / 1000;
+}
+function round3Vec(v) {
+  return { x: round3(v.x), y: round3(v.y), z: round3(v.z) };
+}
+function round3Quat(q) {
+  return { x: round3(q.x), y: round3(q.y), z: round3(q.z), w: round3(q.w) };
+}
 
 // Surface module-level failures on the gate rather than leaving a black screen.
 try {

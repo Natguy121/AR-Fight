@@ -30,6 +30,11 @@ import { Projectiles } from '../src/fx/Projectiles.js';
 import { TargetField } from '../src/fx/Targets.js';
 import { MeleeBehavior } from '../src/weapon/MeleeBehavior.js';
 import { GunBehavior } from '../src/weapon/GunBehavior.js';
+import { NetSession } from '../src/net/NetSession.js';
+import { encode, decode, randomRoomCode, normaliseRoomCode, roomCodeToPeerId } from '../src/net/Protocol.js';
+import { serializeWeapon } from '../src/net/WeaponSync.js';
+import { RemoteWeapon } from '../src/net/RemoteWeapon.js';
+import { OpponentAvatar } from '../src/net/OpponentAvatar.js';
 
 let passed = 0;
 let failed = 0;
@@ -956,16 +961,16 @@ test('melee connects on a fast swing and ignores a slow one', () => {
     rig.getTipPosition(new THREE.Vector3()).distanceTo(target.position) < 1e-6,
     'test setup: strike point should sit on the target',
   );
-  melee.update(1 / 60, field, () => {});   // seeds the previous position
-  melee.update(1 / 60, field, () => {});   // stationary: no hit
+  melee.update(null, 0, 1 / 60, field, () => {});   // seeds the previous position
+  melee.update(null, 0, 1 / 60, field, () => {});   // stationary: no hit
   assert.equal(field.score, 0, 'resting on a target should not score');
 
   // Now sweep through it fast.
   let scored = 0;
   place(new THREE.Vector3(-0.6, 0, -2));
-  melee.update(1 / 60, field, () => { scored++; });
+  melee.update(null, 0, 1 / 60, field, () => { scored++; });
   place(new THREE.Vector3(0.6, 0, -2));
-  melee.update(1 / 60, field, () => { scored++; });
+  melee.update(null, 0, 1 / 60, field, () => { scored++; });
 
   assert.equal(scored, 1, 'a fast swing through the target should score once');
 });
@@ -1187,6 +1192,350 @@ test('extractShapes ignores a shape that fills almost the whole frame', () => {
   // this cap, so the rejection is actually being exercised.
   const { shapes } = PaperTrace.extractShapes(image, { maxAreaFraction: 0.7, minContrast: 5 });
   assert.equal(shapes.length, 0, 'a near-full-frame blob should be rejected as noise, not a weapon outline');
+});
+
+// ---------------------------------------------------------------------------
+group('Protocol (versus mode wire format)');
+
+test('encode/decode round-trips a message', () => {
+  const raw = encode('hit', { damage: 12, kind: 'gun' });
+  const msg = decode(raw);
+  assert.equal(msg.type, 'hit');
+  assert.equal(msg.damage, 12);
+  assert.equal(msg.kind, 'gun');
+});
+
+test('decode rejects malformed input rather than returning garbage', () => {
+  assert.throws(() => decode('not json'));
+  assert.throws(() => decode(JSON.stringify({ noType: true })));
+  assert.throws(() => decode(JSON.stringify(null)));
+});
+
+test('randomRoomCode avoids characters that read ambiguously aloud', () => {
+  for (let i = 0; i < 200; i++) {
+    const code = randomRoomCode();
+    assert.equal(code.length, 5);
+    assert.ok(!/[01OI]/.test(code), `code ${code} contains an ambiguous character`);
+  }
+});
+
+test('normaliseRoomCode strips punctuation and uppercases', () => {
+  assert.equal(normaliseRoomCode('ab-cd!ef12'), 'ABCDEF12');
+  assert.equal(normaliseRoomCode('  xy z '), 'XYZ');
+});
+
+test('roomCodeToPeerId is namespaced off the shared public broker', () => {
+  assert.equal(roomCodeToPeerId('abcde'), 'arfight-ABCDE');
+});
+
+// ---------------------------------------------------------------------------
+group('NetSession (fake transport, no real network)');
+
+/**
+ * Wires two sessions' `_conn.send` straight to each other's `_handleRaw`,
+ * skipping PeerJS (and any real network) entirely — this exercises exactly
+ * the same encode/dispatch path a real WebRTC data channel would drive.
+ */
+function connectFake(a, b) {
+  a._conn = { send: (raw) => b._handleRaw(raw) };
+  b._conn = { send: (raw) => a._handleRaw(raw) };
+  a.connected = true;
+  b.connected = true;
+}
+
+/** Minimal PeerJS-DataConnection-shaped stub, for testing `_wireConnection` itself. */
+function fakeConn() {
+  const handlers = {};
+  return {
+    sent: [],
+    on(event, fn) { (handlers[event] ||= []).push(fn); },
+    send(data) { this.sent.push(data); },
+    trigger(event, ...args) { for (const fn of handlers[event] || []) fn(...args); },
+  };
+}
+
+test('send/on round-trips a message between two connected sessions', () => {
+  const a = new NetSession();
+  const b = new NetSession();
+  connectFake(a, b);
+
+  let received = null;
+  b.on('hit', (msg) => { received = msg; });
+  const ok = a.send('hit', { damage: 25, kind: 'melee' });
+
+  assert.equal(ok, true);
+  assert.ok(received, 'handler fired');
+  assert.equal(received.damage, 25);
+  assert.equal(received.kind, 'melee');
+});
+
+test('a "*" handler sees every message type', () => {
+  const a = new NetSession();
+  const b = new NetSession();
+  connectFake(a, b);
+  const seen = [];
+  b.on('*', (msg) => seen.push(msg.type));
+  a.send('pose', {});
+  a.send('fire', {});
+  assert.deepEqual(seen, ['pose', 'fire']);
+});
+
+test('send is a no-op when not connected', () => {
+  const a = new NetSession();
+  let firedAnyway = false;
+  a.on('hit', () => { firedAnyway = true; });
+  const ok = a.send('hit', { damage: 1 });
+  assert.equal(ok, false, 'send reports failure');
+  assert.equal(firedAnyway, false);
+});
+
+test('a malformed incoming message is dropped, not thrown', () => {
+  const a = new NetSession();
+  let calls = 0;
+  a.on('*', () => { calls++; });
+  assert.doesNotThrow(() => a._handleRaw('{not json'));
+  assert.equal(calls, 0);
+});
+
+test('unsubscribing stops further deliveries to that handler', () => {
+  const a = new NetSession();
+  const b = new NetSession();
+  connectFake(a, b);
+  let count = 0;
+  const off = b.on('pose', () => { count++; });
+  a.send('pose', {});
+  off();
+  a.send('pose', {});
+  assert.equal(count, 1, 'handler only ran before unsubscribing');
+});
+
+test('onConnected fires once the underlying connection opens', () => {
+  const a = new NetSession();
+  let connectedCount = 0;
+  a.onConnected = () => connectedCount++;
+  const conn = fakeConn();
+  a._wireConnection(conn, null, () => {}, () => {});
+  assert.equal(a.connected, false, 'not yet — only wired, not opened');
+  conn.trigger('open');
+  assert.equal(connectedCount, 1);
+  assert.equal(a.connected, true);
+});
+
+test('onDisconnected only fires for a connection that actually opened first', () => {
+  const a = new NetSession();
+  let disconnectedCount = 0;
+  a.onDisconnected = () => disconnectedCount++;
+  const conn = fakeConn();
+  a._wireConnection(conn, null, () => {}, () => {});
+
+  conn.trigger('close'); // never opened — should not count as a disconnect
+  assert.equal(disconnectedCount, 0);
+
+  conn.trigger('open');
+  conn.trigger('close');
+  assert.equal(disconnectedCount, 1);
+  assert.equal(a.connected, false);
+});
+
+// ---------------------------------------------------------------------------
+group('WeaponSync + RemoteWeapon (opponent weapon round-trip)');
+
+test('a serialized weapon rebuilds with the same category, reach and anchors', () => {
+  const s = buildGunSketch();
+  const w = new Weapon(s).setCategory('gun');
+  w.setAnchor('grip', s.nearestPoint(new THREE.Vector3(0, -0.09, -0.5), 0.1).point);
+  w.setAnchor('trigger', s.nearestPoint(new THREE.Vector3(0, -0.03, -0.5), 0.1).point);
+  w.setAnchor('muzzle', s.nearestPoint(new THREE.Vector3(0, 0, -0.72), 0.1).point);
+  w.finalize();
+
+  const data = serializeWeapon(w);
+  assert.equal(data.category, 'gun');
+  near(data.reach, w.reach, 1e-3);
+
+  const remote = new RemoteWeapon(data);
+  assert.equal(remote.category, 'gun');
+  near(remote.reach, w.reach, 1e-3);
+
+  for (const key of ['grip', 'trigger', 'muzzle']) {
+    const original = w.getLocalAnchor(key);
+    const rebuilt = remote.localAnchors.get(key);
+    assert.ok(rebuilt, `${key} anchor survived serialisation`);
+    near(rebuilt.distanceTo(original), 0, 2e-3, `${key} anchor position`);
+  }
+
+  remote.root.updateMatrixWorld(true);
+  const worldMuzzle = remote.getWorldAnchor('muzzle', new THREE.Vector3());
+  near(worldMuzzle.distanceTo(w.getLocalAnchor('muzzle')), 0, 2e-3,
+    'world anchor at the identity root matches the local one');
+
+  remote.dispose();
+});
+
+test('stroke points are thinned to the configured cap before sending', () => {
+  const s = new DrawingSession();
+  // Far more samples than the sync cap, all individually spaced far enough
+  // apart that DrawingSession itself will not have already thinned them.
+  s.beginStroke();
+  for (let i = 0; i <= 200; i++) {
+    s.addPoint(new THREE.Vector3(0, -0.1 + i * 0.001, -0.5));
+  }
+  s.endStroke();
+  const w = new Weapon(s).setCategory('melee');
+  w.setAnchor('grip', s.strokes[0].points[0]);
+  w.setAnchor('strike', s.strokes[0].points[s.strokes[0].points.length - 1]);
+  w.finalize();
+
+  const data = serializeWeapon(w);
+  assert.ok(data.strokes[0].points.length <= config.versus.maxSyncPointsPerStroke,
+    `${data.strokes[0].points.length} should be <= ${config.versus.maxSyncPointsPerStroke}`);
+  // Still recognisably the same shape: the two endpoints are still ~0.2m
+  // apart (matching the original stroke's span), not collapsed together.
+  // Not checking a specific axis: finalize() is free to pick whichever
+  // local axis "forward" lands on (see its own straight-up/down fallback),
+  // so only the shape survives — not which way it's expressed.
+  const first = data.strokes[0].points[0];
+  const last = data.strokes[0].points[data.strokes[0].points.length - 1];
+  const span = Math.hypot(first.x - last.x, first.y - last.y, first.z - last.z);
+  assert.ok(span > 0.15, `thinning should preserve the stroke's endpoints, got span ${span.toFixed(3)}`);
+});
+
+// ---------------------------------------------------------------------------
+group('OpponentAvatar (health/elimination)');
+
+test('takeDamage floors at zero and marks the avatar dead', () => {
+  const opp = new OpponentAvatar();
+  const start = opp.health;
+  opp.takeDamage(30);
+  near(opp.health, start - 30, 1e-6);
+  assert.equal(opp.alive, true);
+  assert.equal(opp.hitbox.alive, true, 'hitbox mirrors alive so Projectiles.update sees it too');
+
+  opp.takeDamage(10000);
+  assert.equal(opp.health, 0, 'health does not go negative');
+  assert.equal(opp.alive, false);
+  assert.equal(opp.hitbox.alive, false);
+
+  // A defeated opponent cannot be damaged further (no negative health, no
+  // resurrecting by accident from a stray late-arriving hit).
+  opp.takeDamage(5);
+  assert.equal(opp.health, 0);
+  opp.dispose();
+});
+
+test('resetHealth revives for a new round without touching the weapon', () => {
+  const opp = new OpponentAvatar();
+  opp.setWeapon(serializeWeapon(
+    (() => {
+      const s = buildGunSketch();
+      const w = new Weapon(s).setCategory('gun');
+      w.setAnchor('grip', s.nearestPoint(new THREE.Vector3(0, -0.09, -0.5), 0.1).point);
+      w.setAnchor('trigger', s.nearestPoint(new THREE.Vector3(0, -0.03, -0.5), 0.1).point);
+      w.setAnchor('muzzle', s.nearestPoint(new THREE.Vector3(0, 0, -0.72), 0.1).point);
+      w.finalize();
+      return w;
+    })(),
+  ));
+  opp.takeDamage(9999);
+  assert.equal(opp.alive, false);
+
+  const weaponBefore = opp.weapon;
+  opp.resetHealth();
+  assert.equal(opp.alive, true);
+  assert.equal(opp.health, config.versus.maxHealth);
+  assert.equal(opp.hitbox.alive, true);
+  assert.equal(opp.weapon, weaponBefore, 'resetHealth does not touch the weapon');
+
+  opp.dispose();
+});
+
+test('hitbox keeps a stable identity across place() so a hit can be told apart from a target', () => {
+  const opp = new OpponentAvatar();
+  const hitboxRef = opp.hitbox;
+  opp.place(new THREE.Vector3(0, 0, 0), new THREE.Quaternion());
+  assert.equal(opp.hitbox, hitboxRef, 'same object reference, not rebuilt');
+  near(opp.hitbox.position.distanceTo(opp.group.position), 0, 1e-9,
+    'hitbox.position tracks the group (they are the same Vector3, not a copy)');
+  opp.dispose();
+});
+
+// ---------------------------------------------------------------------------
+group('MeleeBehavior throwing');
+
+/** A melee weapon whose strike anchor is straight up the local +Y axis. */
+function buildMeleeRig() {
+  const rig = new WeaponRig();
+  const s = new DrawingSession();
+  drawLine(s, new THREE.Vector3(0, -0.15, -0.6), new THREE.Vector3(0, 0.25, -0.6), 40);
+  const w = new Weapon(s).setCategory('melee');
+  w.setAnchor('grip', s.nearestPoint(new THREE.Vector3(0, -0.14, -0.6), 0.1).point);
+  w.setAnchor('strike', s.nearestPoint(new THREE.Vector3(0, 0.24, -0.6), 0.1).point);
+  w.finalize();
+  rig.attach(w);
+  return { rig, weapon: w };
+}
+
+test('a fast swing released mid-pinch throws; a slow one or an unreleased pinch does not', () => {
+  const { rig, weapon } = buildMeleeRig();
+  const field = new TargetField();
+  for (const t of field.targets) t.alive = false; // out of the way
+
+  const place = (tipWorld) => {
+    const offset = weapon.getLocalAnchor('strike').clone().applyQuaternion(weapon.root.quaternion);
+    weapon.root.position.copy(tipWorld).sub(offset);
+    weapon.root.updateMatrixWorld(true);
+  };
+
+  const melee = new MeleeBehavior(rig, null);
+  let now = 0;
+  const dt = 1 / 60;
+  place(new THREE.Vector3(0, 0, -2));
+  melee.update({ visible: true, pinching: true }, (now += 16), dt, field, () => {}); // seed position, pinching
+
+  // Fast swing while still pinching: no throw yet (only releasing throws).
+  place(new THREE.Vector3(0.6, 0, -2));
+  let thrown = melee.update({ visible: true, pinching: true }, (now += 16), dt, field, () => {});
+  assert.equal(thrown, null, 'still pinching — nothing thrown yet');
+  assert.ok(melee.speed > config.melee.throwSpeed, `test setup: swing should be fast, got ${melee.speed}`);
+
+  // Release the pinch on the next frame, still moving fast: throws.
+  place(new THREE.Vector3(1.2, 0, -2));
+  thrown = melee.update({ visible: true, pinching: false }, (now += 16), dt, field, () => {});
+  assert.ok(thrown, 'release mid-fast-swing throws');
+  near(thrown.direction.length(), 1, 1e-6, 'throw direction is a unit vector');
+  assert.ok(thrown.direction.x > 0, 'thrown roughly the way the swing was moving');
+
+  // Cooldown blocks an immediate second throw even if the same motion repeats.
+  place(new THREE.Vector3(0, 0, -2));
+  melee.update({ visible: true, pinching: true }, (now += 16), dt, field, () => {});
+  place(new THREE.Vector3(0.6, 0, -2));
+  melee.update({ visible: true, pinching: true }, (now += 16), dt, field, () => {});
+  place(new THREE.Vector3(1.2, 0, -2));
+  const secondThrow = melee.update({ visible: true, pinching: false }, (now += 16), dt, field, () => {});
+  assert.equal(secondThrow, null, 'throw cooldown should still be active');
+});
+
+test('a slow release never throws, pinch or not', () => {
+  const { rig, weapon } = buildMeleeRig();
+  const field = new TargetField();
+  for (const t of field.targets) t.alive = false;
+
+  const place = (tipWorld) => {
+    const offset = weapon.getLocalAnchor('strike').clone().applyQuaternion(weapon.root.quaternion);
+    weapon.root.position.copy(tipWorld).sub(offset);
+    weapon.root.updateMatrixWorld(true);
+  };
+
+  const melee = new MeleeBehavior(rig, null);
+  let now = 0;
+  const dt = 1 / 60;
+  place(new THREE.Vector3(0, 0, -2));
+  melee.update({ visible: true, pinching: true }, (now += 16), dt, field, () => {});
+
+  // Barely move: well under both the swing and throw speed thresholds.
+  place(new THREE.Vector3(0.001, 0, -2));
+  melee.update({ visible: true, pinching: true }, (now += 16), dt, field, () => {});
+  const thrown = melee.update({ visible: true, pinching: false }, (now += 16), dt, field, () => {});
+  assert.equal(thrown, null, 'releasing a near-stationary weapon should not throw it');
 });
 
 // ---------------------------------------------------------------------------

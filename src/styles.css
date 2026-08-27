@@ -135,7 +135,7 @@ button {
   cursor: pointer;
 }
 
-#gate-start {
+.btn-primary {
   width: 100%;
   padding: 15px;
   font-size: 17px;
@@ -147,8 +147,71 @@ button {
   transition: background 120ms ease, transform 80ms ease;
 }
 
-#gate-start:active { background: var(--accent-press); transform: scale(0.985); }
-#gate-start:disabled { opacity: 0.55; }
+.btn-primary:active { background: var(--accent-press); transform: scale(0.985); }
+.btn-primary:disabled { opacity: 0.55; }
+
+.btn-secondary {
+  width: 100%;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  transition: background 120ms ease, transform 80ms ease;
+}
+
+.btn-secondary:active { background: rgba(255, 255, 255, 0.06); transform: scale(0.985); }
+
+.btn-text {
+  display: block;
+  margin: 14px auto 0;
+  padding: 6px 4px;
+  font-size: 14px;
+  color: var(--muted);
+  background: none;
+  border: none;
+}
+
+.btn-row {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-row > * { flex: 1; }
+
+#lobby-room-code {
+  margin: 4px 0 10px;
+  padding: 16px;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  text-align: center;
+  color: var(--accent);
+  background: rgba(90, 200, 250, 0.08);
+  border: 1px solid rgba(90, 200, 250, 0.3);
+  border-radius: 12px;
+}
+
+.code-input {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 14px;
+  font: inherit;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+}
+
+.code-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .error {
   margin: 14px 0 0;

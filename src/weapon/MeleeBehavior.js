@@ -30,22 +30,32 @@ export class MeleeBehavior {
     this._prevTip = new THREE.Vector3();
     this._hasPrev = false;
     this._velocity = new THREE.Vector3();
+    this._wasPinching = false;
+    this._lastThrowMs = -Infinity;
   }
 
   reset() {
     this._hasPrev = false;
     this.speed = 0;
     this.hits = 0;
+    this._wasPinching = false;
     this.trail?.clear();
   }
 
   /**
+   * @param {object|null} hand HandPose-like; only `pinching` is read here,
+   *   everything positional still comes from the rig (the tip is the
+   *   weapon's tagged strike anchor, not the hand itself, and the two are
+   *   not the same point once grip offsets are applied).
+   * @param {number} nowMs
    * @param {number} dt
    * @param {import('../fx/Targets.js').TargetField} targets
    * @param {(target, point) => void} onHit
+   * @returns {{origin: THREE.Vector3, direction: THREE.Vector3}|null} a
+   *   throw released this frame, or null.
    */
-  update(dt, targets, onHit) {
-    if (!this.rig.attached || this.rig.weapon?.category !== 'melee') return;
+  update(hand, nowMs, dt, targets, onHit) {
+    if (!this.rig.attached || this.rig.weapon?.category !== 'melee') return null;
 
     this.rig.getTipPosition(_tip);
     this.rig.getGripPosition(_grip);
@@ -63,12 +73,32 @@ export class MeleeBehavior {
     this.trail?.push(_tip);
     this.trail?.update(dt, THREE.MathUtils.clamp(this.speed / config.melee.minSwingSpeed, 0, 1.4));
 
+    // Throw: pinch through the windup, release at speed — the same motion
+    // as actually letting go of something mid-swing. A held weapon never
+    // otherwise leaves the hand (see WeaponRig), so this is the only way a
+    // melee weapon reaches anything outside swing range, which in versus
+    // mode is the only range there is.
+    let thrown = null;
+    const pinching = !!hand?.visible && hand.pinching;
+    const released = this._wasPinching && !pinching;
+    this._wasPinching = pinching;
+    if (
+      released
+      && this.speed >= config.melee.throwSpeed
+      && nowMs - this._lastThrowMs >= config.melee.throwCooldownMs
+      && this._velocity.lengthSq() > 1e-6
+    ) {
+      this._lastThrowMs = nowMs;
+      thrown = { origin: _tip.clone(), direction: this._velocity.clone().normalize() };
+    }
+
     if (this.speed >= config.melee.minSwingSpeed) {
       this._testHits(targets, onHit);
     }
 
     this._prevTip.copy(_tip);
     this._hasPrev = true;
+    return thrown;
   }
 
   /**

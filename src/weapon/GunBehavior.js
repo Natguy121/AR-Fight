@@ -25,6 +25,9 @@ export class GunBehavior {
     this.shotsFired = 0;
     this._lastShotMs = -Infinity;
     this._triggerWasPulled = false;
+    /** Pool index of the most recent shot — versus mode tags it in
+     * `main.js`'s hit callback, to tell a gun shot from a thrown melee. */
+    this.lastProjectileIndex = -1;
 
     /** Set true to keep firing while the trigger is held. */
     this.automatic = false;
@@ -34,6 +37,7 @@ export class GunBehavior {
     this.shotsFired = 0;
     this._lastShotMs = -Infinity;
     this._triggerWasPulled = false;
+    this.lastProjectileIndex = -1;
   }
 
   /**
@@ -64,7 +68,7 @@ export class GunBehavior {
     this.rig.getTipPosition(_muzzle);
     this.rig.getForward(_forward);
 
-    this.projectiles.fire(_muzzle, _forward);
+    this.lastProjectileIndex = this.projectiles.fire(_muzzle, _forward);
     this.flash?.trigger(_muzzle, headQuat);
     this.rig.kick(1);
     this.shotsFired++;

@@ -124,7 +124,57 @@ async function main() {
 
     console.log('\nBoot');
     await page.goto(BASE, { waitUntil: 'load' });
-    check(await page.locator('#gate').isVisible(), 'gate screen renders');
+    check(await page.locator('#lobby').isVisible(), 'lobby screen renders');
+    check(await page.locator('#gate').isHidden(), 'gate screen waits behind the lobby');
+
+    // --- Versus lobby: this sandbox's egress policy blocks the PeerJS CDN
+    // outright (confirmed via the proxy's own status endpoint — a 403 to
+    // unpkg.com, not a generic timeout), so a real host/join connection
+    // cannot be exercised here. What *can* be verified for real, and is
+    // worth it on its own: hitting Host or Join with no networking library
+    // loaded fails visibly rather than hanging or throwing — the one
+    // failure mode every real user is guaranteed to never hit (their phone
+    // has no such block) but that's worth being sure doesn't wedge the UI.
+    console.log('\nLobby (versus mode, offline)');
+    const peerLoaded = await page.evaluate(() => typeof window.Peer === 'function');
+    check(!peerLoaded, 'PeerJS CDN is unreachable here (expected — see note below)');
+
+    await page.click('#lobby-versus');
+    check(await page.locator('#lobby-versus-mode').isVisible(), 'versus sub-menu opens');
+
+    await page.click('#lobby-host');
+    await page.waitForTimeout(500);
+    let lobbyState = await page.evaluate(() => ({
+      errorVisible: !document.getElementById('lobby-error').hidden,
+      errorText: document.getElementById('lobby-error').textContent,
+      hostingVisible: !document.getElementById('lobby-hosting').hidden,
+    }));
+    check(!lobbyState.hostingVisible && lobbyState.errorVisible && /networking/i.test(lobbyState.errorText),
+      'hosting without PeerJS fails with a visible error, not a hang',
+      JSON.stringify(lobbyState));
+
+    await page.click('#lobby-join');
+    await page.fill('#lobby-code-input', 'ab-cd!ef12');
+    check(await page.inputValue('#lobby-code-input') === 'ABCDE',
+      'room code input strips punctuation, uppercases, and caps at 5 chars');
+    await page.click('#lobby-connect');
+    await page.waitForTimeout(500);
+    lobbyState = await page.evaluate(() => ({
+      errorVisible: !document.getElementById('lobby-error').hidden,
+      errorText: document.getElementById('lobby-error').textContent,
+      connectDisabled: document.getElementById('lobby-connect').disabled,
+    }));
+    check(lobbyState.errorVisible && /networking/i.test(lobbyState.errorText) && !lobbyState.connectDisabled,
+      'joining without PeerJS fails with a visible error and re-enables Connect',
+      JSON.stringify(lobbyState));
+
+    await page.click('#lobby-cancel-join');
+    check(await page.locator('#lobby-versus-mode').isVisible(), 'cancel returns to the versus sub-menu');
+    await page.click('#lobby-back-mode');
+    check(await page.locator('#lobby-mode').isVisible(), 'back returns to the solo/versus choice');
+
+    await page.click('#lobby-solo');
+    check(await page.locator('#gate').isVisible(), 'gate screen renders after choosing solo');
 
     // Hand tracking needs a CDN this sandbox cannot reach; the pointer
     // fallback is the path under test here anyway.

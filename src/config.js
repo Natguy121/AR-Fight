@@ -249,6 +249,41 @@ export const config = {
     hitCooldownMs: 350,
     trailSegments: 24,
     trailLifetimeMs: 240,
+    /**
+     * Throwing a melee weapon: releasing the pinch while the strike point is
+     * moving at least this fast (m/s) launches it as a projectile instead of
+     * just ending the swing. This is the *only* way a melee weapon can land
+     * a hit in versus mode — there is no shared physical space to swing into
+     * range of a remote opponent in.
+     */
+    throwSpeed: 2.2,
+    throwProjectileSpeed: 14,
+    throwDamage: 34,
+    /** Cooldown between throws, ms — otherwise a fast flick-flick-flick spams them. */
+    throwCooldownMs: 600,
+  },
+
+  /** Remote 1v1: draw your own weapon, then fight whoever you connect to. */
+  versus: {
+    maxHealth: 100,
+    gunDamage: 12,
+    /** Distance in front of the local player the opponent avatar is fixed
+     * at, metres — see `OpponentAvatar.place`. There is no shared physical
+     * space between two remote rooms to place them "truly" at. */
+    opponentDistance: 2.2,
+    /** Vertical offset from the local player's own head height. */
+    opponentHeightOffset: -0.05,
+    /** Radius of the opponent's hit-test sphere, metres — generous, since
+     * their avatar is a rough stand-in for a whole person. */
+    hitRadius: 0.32,
+    /** How often outgoing pose updates are sent, per second. Gameplay only
+     * needs to look responsive, not be pixel-accurate, so this is well below
+     * render rate to keep the data channel light. */
+    poseSendHz: 15,
+    /** A weapon sketch can have many stroke samples; a receive-only visual
+     * doesn't need draw-time density, so each stroke is thinned to at most
+     * this many points before it goes over the wire (see `WeaponSync`). */
+    maxSyncPointsPerStroke: 60,
   },
 
   /** Practice targets. */
