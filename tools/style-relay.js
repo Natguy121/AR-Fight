@@ -57,17 +57,14 @@ try {
 }
 
 /**
- * Mirrors the fields in `src/style/Style.js`.
+ * Mirrors the fields in `src/style/Style.js` and `src/style/Theme.js`.
  *
  * Structured outputs make malformed replies impossible rather than merely
  * unlikely, so the relay never has to parse prose. The client still re-runs
  * `makeStyle` on whatever arrives — this schema guarantees the *shape*, but
  * only the client's clamping guarantees the values are in renderable range.
  */
-const StyleSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  blurb: z.string(),
+const MaterialSchema = z.object({
   ramp: z.array(z.string()).length(4),
   chroma: z.number(),
   contrast: z.number(),
@@ -80,9 +77,27 @@ const StyleSchema = z.object({
   sheenColor: z.string(),
 });
 
+const ThemeSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  blurb: z.string(),
+  base: MaterialSchema,
+  // Every object is optional: a room with no sofa in it should not force
+  // Claude to invent one, and anything omitted falls through to `base`.
+  objects: z.object({
+    tv: MaterialSchema.optional(),
+    sofa: MaterialSchema.optional(),
+    chair: MaterialSchema.optional(),
+    'dining table': MaterialSchema.optional(),
+    'potted plant': MaterialSchema.optional(),
+    bottle: MaterialSchema.optional(),
+    person: MaterialSchema.optional(),
+  }).optional(),
+});
+
 const client = new Anthropic();
 
-async function pickStyle(imageBase64, exclude) {
+async function pickTheme(imageBase64, exclude) {
   const avoid = exclude
     ? `\n\nThe room is currently "${exclude}". Choose something clearly different.`
     : '';
@@ -94,17 +109,17 @@ async function pickStyle(imageBase64, exclude) {
     // `effort: low` is for latency, not cost: someone is standing in a headset
     // waiting for the room to change, and picking a palette from a photo is
     // well inside what Opus 5 does easily at low effort.
-    output_config: { effort: 'low', format: zodOutputFormat(StyleSchema) },
+    output_config: { effort: 'low', format: zodOutputFormat(ThemeSchema) },
     messages: [{
       role: 'user',
       content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
-        { type: 'text', text: `Choose one material for this room.${avoid}` },
+        { type: 'text', text: `Dress this room.${avoid}` },
       ],
     }],
   });
 
-  if (!response.parsed_output) throw new Error('Claude did not return a usable style.');
+  if (!response.parsed_output) throw new Error('Claude did not return a usable theme.');
   return response.parsed_output;
 }
 
@@ -147,10 +162,11 @@ async function handler(req, res) {
     const { image, exclude } = JSON.parse(await readBody(req));
     if (typeof image !== 'string' || !image) throw new Error('Missing `image`.');
 
-    const style = await pickStyle(image, typeof exclude === 'string' ? exclude : null);
-    console.log(`  picked: ${style.name}`);
+    const theme = await pickTheme(image, typeof exclude === 'string' ? exclude : null);
+    const objects = Object.keys(theme.objects || {});
+    console.log(`  picked: ${theme.name}${objects.length ? ` (${objects.join(', ')})` : ''}`);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ style }));
+    res.end(JSON.stringify({ theme }));
   } catch (err) {
     console.error('  failed:', err?.message || err);
     res.writeHead(500, { 'content-type': 'application/json' });

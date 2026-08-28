@@ -26,8 +26,12 @@ import {
   makeStyle, lerpStyle, passthroughStyle, parseColor, normaliseRamp, TEXTURES,
 } from '../src/style/Style.js';
 import { restyleColorCPU } from '../src/render/Restyle.js';
-import { StyleDirector, PresetSource } from '../src/style/StyleDirector.js';
-import { STYLES } from '../src/style/StyleLibrary.js';
+import { ThemeDirector, ThemeSource } from '../src/style/ThemeDirector.js';
+import {
+  makeTheme, lerpTheme, passthroughTheme, styleForClass, themeStyleTable, CLASSES, CLASS_COUNT,
+} from '../src/style/Theme.js';
+import { THEMES_ALL } from '../src/style/ThemeLibrary.js';
+import { ClassAtlas, RAMP_WIDTH, PARAM_TEXELS } from '../src/render/ClassAtlas.js';
 import { extractStyle } from '../src/style/ClaudeStylist.js';
 
 let passed = 0;
@@ -668,13 +672,13 @@ test('normaliseRamp stretches a short ramp instead of padding it with grey', () 
   }
 });
 
-test('every shipped preset round-trips through validation unchanged', () => {
-  // If a preset came back altered it would mean the shipped values are out of
+test('every shipped theme round-trips through validation unchanged', () => {
+  // If a theme came back altered it would mean the shipped values are out of
   // range and being silently clamped — i.e. what renders is not what is
-  // written here. Whether a preset preserves shading is checked further down,
+  // written here. Whether it preserves shading is checked further down,
   // measured through the whole pipeline rather than guessed from the ramp.
-  for (const preset of STYLES) {
-    assert.deepEqual(makeStyle(preset), preset, `${preset.id} is not stable under makeStyle`);
+  for (const theme of THEMES_ALL) {
+    assert.deepEqual(makeTheme(theme), theme, `${theme.id} is not stable under makeTheme`);
   }
 });
 
@@ -696,7 +700,7 @@ group('Restyle (the shape-preserving repaint)');
 test('the passthrough style is the exact identity, not merely close', () => {
   // This is what makes "off" genuinely free. If it ever drifts, the app is
   // quietly degrading the camera image even when nothing is applied.
-  const off = passthroughStyle();
+  const off = passthroughTheme().base;
   for (const rgb of [[0, 0, 0], [1, 1, 1], [0.2, 0.6, 0.9], [0.5, 0.5, 0.5], [0.83, 0.11, 0.42]]) {
     const out = restyleColorCPU(rgb, off);
     for (let c = 0; c < 3; c++) near(out[c], rgb[c], 1e-9, `channel ${c} of ${rgb}`);
@@ -706,7 +710,7 @@ test('the passthrough style is the exact identity, not merely close', () => {
 test('luminance still orders the output, so shading survives the repaint', () => {
   // The core claim: a darker patch of a real object stays darker after being
   // repainted, which is what keeps its 3D form readable and reachable.
-  for (const style of STYLES) {
+  for (const style of THEMES_ALL.flatMap((t) => themeStyleTable(t))) {
     const greys = [0.05, 0.25, 0.5, 0.75, 0.95];
     const brightness = greys.map((g) => {
       const out = restyleColorCPU([g, g, g], style);
@@ -753,7 +757,7 @@ test('output always stays inside the displayable range', () => {
 });
 
 // ---------------------------------------------------------------------------
-group('StyleDirector (decide once, then hold)');
+group('ThemeDirector (decide once, then hold)');
 
 /** A minimal in-memory Storage, so persistence is testable off-browser. */
 function fakeStorage() {
@@ -782,7 +786,7 @@ function countingSource(ids = ['a', 'b', 'c']) {
 
 await testAsync('nothing but an explicit call can change the style', async () => {
   const source = countingSource();
-  const d = new StyleDirector({ source, storage: null, fadeSeconds: 0 });
+  const d = new ThemeDirector({ source, storage: null, fadeSeconds: 0 });
 
   await d.transform();
   const chosen = d.target.id;
@@ -799,7 +803,7 @@ await testAsync('nothing but an explicit call can change the style', async () =>
 
 await testAsync('next() is the only way to move on, and avoids repeating', async () => {
   const source = countingSource(['a', 'b']);
-  const d = new StyleDirector({ source, storage: null, fadeSeconds: 0 });
+  const d = new ThemeDirector({ source, storage: null, fadeSeconds: 0 });
   await d.transform();
   assert.equal(d.target.id, 'a');
   await d.next();
@@ -816,7 +820,7 @@ await testAsync('a second call while one is in flight is ignored, not queued', a
     calls: 0,
     async pick() { this.calls++; await gate; return { id: 'slow' }; },
   };
-  const d = new StyleDirector({ source, storage: null, fadeSeconds: 0 });
+  const d = new ThemeDirector({ source, storage: null, fadeSeconds: 0 });
   const first = d.transform();
   await d.transform();
   release();
@@ -826,13 +830,13 @@ await testAsync('a second call while one is in flight is ignored, not queued', a
 
 await testAsync('the choice survives a reload', async () => {
   const storage = fakeStorage();
-  const a = new StyleDirector({ source: countingSource(['jade']), storage, fadeSeconds: 0 });
+  const a = new ThemeDirector({ source: countingSource(['jade']), storage, fadeSeconds: 0 });
   await a.transform();
 
   // A fresh director, as if the page had been reloaded, with a source that
   // would hand out something different if it were consulted at all.
   const source = countingSource(['iron']);
-  const b = new StyleDirector({ source, storage, fadeSeconds: 0 });
+  const b = new ThemeDirector({ source, storage, fadeSeconds: 0 });
   assert.equal(b.active, true, 'restored as transformed');
   assert.equal(b.target.id, 'jade', 'restored the same material');
   assert.equal(source.calls, 0, 'restoring must not consult the source');
@@ -840,25 +844,25 @@ await testAsync('the choice survives a reload', async () => {
 
 await testAsync('off() clears the memory so a reload comes back untouched', async () => {
   const storage = fakeStorage();
-  const a = new StyleDirector({ source: countingSource(), storage, fadeSeconds: 0 });
+  const a = new ThemeDirector({ source: countingSource(), storage, fadeSeconds: 0 });
   await a.transform();
   a.off();
   assert.equal(a.active, false);
 
-  const b = new StyleDirector({ source: countingSource(), storage, fadeSeconds: 0 });
+  const b = new ThemeDirector({ source: countingSource(), storage, fadeSeconds: 0 });
   assert.equal(b.active, false, 'reload after off should stay off');
 });
 
 test('a corrupt saved style is discarded rather than retried forever', () => {
   const storage = fakeStorage();
-  storage.setItem('ar-reskin-style', '{ not json');
-  const d = new StyleDirector({ source: countingSource(), storage, fadeSeconds: 0 });
+  storage.setItem('ar-reskin-theme', '{ not json');
+  const d = new ThemeDirector({ source: countingSource(), storage, fadeSeconds: 0 });
   assert.equal(d.active, false);
-  assert.equal(storage.getItem('ar-reskin-style'), null, 'bad entry cleared');
+  assert.equal(storage.getItem('ar-reskin-theme'), null, 'bad entry cleared');
 });
 
 await testAsync('a cross-fade runs only on a deliberate change, and settles', async () => {
-  const d = new StyleDirector({ source: countingSource(['a', 'b']), storage: null, fadeSeconds: 0.5 });
+  const d = new ThemeDirector({ source: countingSource(['a', 'b']), storage: null, fadeSeconds: 0.5 });
   await d.transform();
   assert.equal(d.isFading, true, 'the first transform fades in');
   for (let i = 0; i < 60; i++) d.update(1 / 60);
@@ -872,7 +876,7 @@ await testAsync('a cross-fade runs only on a deliberate change, and settles', as
 });
 
 await testAsync('a failing source leaves the previous look untouched', async () => {
-  const d = new StyleDirector({
+  const d = new ThemeDirector({
     source: { name: 'Broken', async pick() { throw new Error('offline'); } },
     storage: null,
     fadeSeconds: 0,
@@ -882,12 +886,192 @@ await testAsync('a failing source leaves the previous look untouched', async () 
   assert.equal(d.lastError.message, 'offline');
 });
 
-test('PresetSource never returns the excluded style when alternatives exist', async () => {
-  const source = new PresetSource(STYLES, () => 0);
+test('ThemeSource never returns the excluded theme when alternatives exist', async () => {
+  const source = new ThemeSource(THEMES_ALL, () => 0);
   // With a random() pinned to 0 it would always return the first entry;
   // excluding that one must still yield something valid.
-  const picked = await source.pick({ exclude: STYLES[0].id });
-  assert.notEqual(picked.id, STYLES[0].id);
+  const picked = await source.pick({ exclude: THEMES_ALL[0].id });
+  assert.notEqual(picked.id, THEMES_ALL[0].id);
+});
+
+// ---------------------------------------------------------------------------
+group('Theme (a material per recognised object)');
+
+test('the class list matches what the model actually emits', () => {
+  // Verified against the real model in tools/smoke.js; this pins the ordering
+  // here so a reshuffle shows up as a failing test rather than as every
+  // object being painted as the wrong thing.
+  assert.equal(CLASS_COUNT, 21);
+  assert.equal(CLASSES[0], 'background');
+  for (const name of ['chair', 'sofa', 'tv', 'dining table', 'potted plant', 'person']) {
+    assert.ok(CLASSES.includes(name), `${name} must be detectable`);
+  }
+});
+
+test('an object without its own material falls through to the room', () => {
+  const theme = makeTheme({
+    base: { ramp: ['#000000', '#333333', '#888888', '#ffffff'] },
+    objects: { tv: { ramp: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'] } },
+  });
+  assert.equal(styleForClass(theme, 'tv').ramp[0][0], 1, 'tv uses its own material');
+  assert.equal(styleForClass(theme, 'sofa'), theme.base, 'sofa falls back to the base');
+  // A cow in a living room is a misdetection; the quietest thing it can do is
+  // look like the wall behind it.
+  assert.equal(styleForClass(theme, 'cow'), theme.base);
+});
+
+test('object names the model cannot detect are dropped, not stored', () => {
+  const theme = makeTheme({ base: {}, objects: { spaceship: { chroma: 1 }, TV: { chroma: 0.5 } } });
+  assert.ok(!('spaceship' in theme.objects), 'undetectable class rejected');
+  assert.ok('tv' in theme.objects, 'case is normalised');
+});
+
+test('themeStyleTable yields one material per class, in model order', () => {
+  const theme = makeTheme({ base: {}, objects: { sofa: { chroma: 0.9 } } });
+  const table = themeStyleTable(theme);
+  assert.equal(table.length, CLASS_COUNT);
+  assert.equal(table[0], theme.base, 'class 0 is the room itself');
+  near(table[CLASSES.indexOf('sofa')].chroma, 0.9, 1e-6);
+});
+
+test('a malformed theme still renders something', () => {
+  for (const junk of [null, 42, 'hello', { objects: 'nope' }, { base: 'nope' }]) {
+    const t = makeTheme(junk);
+    assert.equal(t.base.ramp.length, 4);
+    assert.equal(typeof t.objects, 'object');
+  }
+});
+
+test('lerpTheme blends objects against the other theme base when only one has them', () => {
+  const a = makeTheme({
+    id: 'a', base: { chroma: 0 }, objects: { tv: { chroma: 1 } },
+  });
+  const b = makeTheme({ id: 'b', base: { chroma: 0 } });
+  const mid = lerpTheme(a, b, 0.5);
+  // b has no tv, so a's tv fades toward b's *base*, not toward nothing.
+  near(mid.objects.tv.chroma, 0.5, 1e-6);
+});
+
+test('every shipped theme gives its objects genuinely different materials', () => {
+  // The entire point. If an object's material matched the base, that object
+  // would be indistinguishable from the wall behind it and this would be a
+  // colour filter again.
+  for (const theme of THEMES_ALL) {
+    const names = Object.keys(theme.objects);
+    assert.ok(names.length >= 2, `${theme.id} styles too few objects (${names.length})`);
+    for (const name of names) {
+      const style = theme.objects[name];
+
+      // Distinctness has two independent routes, and a theme may use either.
+      // Fill: how differently the same mid-grey comes out.
+      const midBase = restyleColorCPU([0.5, 0.5, 0.5], theme.base);
+      const midObj = restyleColorCPU([0.5, 0.5, 0.5], style);
+      const fill = midBase.reduce((sum, c, i) => sum + Math.abs(c - midObj[i]), 0);
+
+      // Outline: a dark room with cyan edges and a dark sofa with magenta
+      // edges read as clearly different objects even though their fills are
+      // nearly identical — so edge *colour*, weighted by how strongly each
+      // draws it, counts too. Ignoring this is what made an earlier version
+      // of this test flag a sofa that is in fact obviously distinct.
+      const edgeWeight = Math.min(theme.base.edgeStrength, style.edgeStrength);
+      const edge = theme.base.edgeColor.reduce(
+        (sum, c, i) => sum + Math.abs(c - style.edgeColor[i]), 0,
+      ) * edgeWeight + Math.abs(theme.base.edgeStrength - style.edgeStrength);
+
+      assert.ok(
+        fill + edge > 0.25,
+        `${theme.id}/${name} is nearly identical to the room `
+        + `(fill ${fill.toFixed(3)}, edge ${edge.toFixed(3)})`,
+      );
+
+      // Edges alone are not enough, though, and this is the floor that says
+      // so. Outlines are drawn from detail in the image, so they appear at an
+      // object's silhouette and its creases and nowhere else — across the
+      // broad flat middle of a sofa there is no detail to draw, and all that
+      // shows is the fill. A theme that separates its objects with trim only
+      // therefore still looks like one tinted room wherever it matters most.
+      assert.ok(
+        fill > 0.2,
+        `${theme.id}/${name} fills the same as the room and leans on trim to `
+        + `tell them apart (fill ${fill.toFixed(3)}) — flat surfaces will read `
+        + 'as wall',
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+group('ClassAtlas (per-class materials as lookup textures)');
+
+test('the ramp atlas holds one row per class, spanning that class ramp', () => {
+  const theme = makeTheme({
+    base: { ramp: ['#000000', '#000000', '#000000', '#000000'] },
+    objects: { tv: { ramp: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'] } },
+  });
+  const atlas = new ClassAtlas().update(theme);
+  const data = atlas.rampTexture.image.data;
+  const rowStart = (c) => c * RAMP_WIDTH * 4;
+
+  assert.equal(data[rowStart(0)], 0, 'background row is black');
+  assert.equal(data[rowStart(CLASSES.indexOf('tv'))], 255, 'tv row is white');
+  // A class with no override must be byte-identical to the base row, or it
+  // would render as a subtly different material for no reason.
+  const sofaRow = rowStart(CLASSES.indexOf('sofa'));
+  for (let i = 0; i < RAMP_WIDTH * 4; i++) {
+    assert.equal(data[sofaRow + i], data[rowStart(0) + i], `sofa row byte ${i}`);
+  }
+  atlas.dispose();
+});
+
+test('the ramp atlas interpolates across a row the way the shader reads it', () => {
+  const atlas = new ClassAtlas().update(makeTheme({
+    base: { ramp: ['#000000', '#555555', '#aaaaaa', '#ffffff'] },
+  }));
+  const data = atlas.rampTexture.image.data;
+  assert.equal(data[0], 0, 'darkest end');
+  assert.equal(data[(RAMP_WIDTH - 1) * 4], 255, 'brightest end');
+  // Monotonic across the row: this is the shading that keeps objects readable.
+  for (let x = 1; x < RAMP_WIDTH; x++) {
+    assert.ok(data[x * 4] >= data[(x - 1) * 4], `ramp dips at ${x}`);
+  }
+  atlas.dispose();
+});
+
+test('packed parameters survive the round trip the shader decodes', () => {
+  const theme = makeTheme({
+    base: {
+      chroma: 0.4, contrast: 1.5, textureStrength: 0.25, edgeStrength: 0.8,
+      texture: 'veins', textureScale: 200, sheen: 0.75,
+      edgeColor: '#ff0000', sheenColor: '#0000ff',
+    },
+  });
+  const atlas = new ClassAtlas().update(theme);
+  const d = atlas.paramTexture.image.data;
+  const at = (texel, ch) => d[texel * 4 + ch];
+
+  near(at(0, 0) / 255, 0.4, 0.01, 'chroma');
+  near((at(0, 1) / 255) * 3, 1.5, 0.02, 'contrast');
+  near(at(0, 2) / 255, 0.25, 0.01, 'textureStrength');
+  near(at(0, 3) / 255, 0.8, 0.01, 'edgeStrength');
+  // The texture enum is stored raw, so it must come back as an exact integer —
+  // a rounding slip here selects a different pattern entirely.
+  assert.equal(at(1, 0), TEXTURES.veins);
+  near((at(1, 1) / 255) * 400, 200, 2, 'textureScale');
+  near((at(1, 2) / 255) * 1.5, 0.75, 0.01, 'sheen');
+  assert.equal(at(2, 0), 255, 'edgeColor red');
+  assert.equal(at(3, 2), 255, 'sheenColor blue');
+  atlas.dispose();
+});
+
+test('the atlas covers every class, so no index can sample uninitialised memory', () => {
+  const atlas = new ClassAtlas().update(makeTheme({ base: { ramp: ['#102030', '#405060', '#708090', '#a0b0c0'] } }));
+  assert.equal(atlas.rampTexture.image.data.length, RAMP_WIDTH * CLASS_COUNT * 4);
+  assert.equal(atlas.paramTexture.image.data.length, PARAM_TEXELS * CLASS_COUNT * 4);
+  // Alpha is written for every texel; a zero would mean a row was skipped.
+  for (let c = 0; c < CLASS_COUNT; c++) {
+    assert.equal(atlas.rampTexture.image.data[c * RAMP_WIDTH * 4 + 3], 255, `class ${c} row written`);
+  }
+  atlas.dispose();
 });
 
 // ---------------------------------------------------------------------------

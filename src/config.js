@@ -111,6 +111,10 @@ export const config = {
     cdnModelUrl:
       'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
     localModelUrl: './models/hand_landmarker.task',
+    /** DeepLab-v3: what lets the app tell a chair from a sofa from a TV. */
+    cdnSegmenterUrl:
+      'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite',
+    localSegmenterUrl: './models/deeplab_v3.tflite',
     numHands: 2,
     minHandDetectionConfidence: 0.5,
     minHandPresenceConfidence: 0.5,
@@ -146,6 +150,26 @@ export const config = {
     debounceMs: 60,
   },
 
+  /** Recognising what each thing in view actually is. */
+  segmentation: {
+    /**
+     * Turn object awareness on. With it off the app still runs, but paints
+     * everything with the theme's base material — which is a colour filter,
+     * not a reskinned room.
+     */
+    enabled: true,
+    /**
+     * Re-label the scene at most this often, in ms.
+     *
+     * By far the most expensive thing in the app, and rooms hold still, so
+     * running it every frame would spend the whole budget confirming the sofa
+     * is still a sofa. The cost of a longer interval is that the mask lags
+     * behind fast head turns — object colours smear briefly past their
+     * objects. Lower this if that bothers you more than the frame rate does.
+     */
+    intervalMs: 200,
+  },
+
   /** Repainting the world as a different material. */
   reskin: {
     /**
@@ -153,7 +177,7 @@ export const config = {
      *
      * Long enough to read as a transformation rather than a cut, short enough
      * not to feel like waiting. Only ever runs on a deliberate change — see
-     * `StyleDirector`, which exists to guarantee nothing else can trigger one.
+     * `ThemeDirector`, which exists to guarantee nothing else can trigger one.
      */
     fadeSeconds: 0.7,
     /**

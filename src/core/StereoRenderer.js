@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import config from '../config.js';
-import { RESTYLE_GLSL, createStyleUniforms, applyStyleToUniforms } from '../render/Restyle.js';
-import { passthroughStyle } from '../style/Style.js';
+import { RESTYLE_GLSL, createStyleUniforms } from '../render/Restyle.js';
+import { ClassAtlas } from '../render/ClassAtlas.js';
+import { passthroughTheme } from '../style/Theme.js';
 
 /**
  * Renders the world twice — once per eye — over a camera passthrough
@@ -216,13 +217,21 @@ export class StereoRenderer {
       // to achieve exactly the same pixels.
       ...createStyleUniforms(),
     };
-    applyStyleToUniforms(this.bgUniforms, passthroughStyle());
+
+    this.classAtlas = new ClassAtlas();
+    this.bgUniforms.uClassRamp.value = this.classAtlas.rampTexture;
+    this.bgUniforms.uClassParams.value = this.classAtlas.paramTexture;
+    this.setTheme(passthroughTheme());
     const mat = new THREE.ShaderMaterial({
       vertexShader: BACKGROUND_VERT,
       fragmentShader: BACKGROUND_FRAG,
       uniforms: this.bgUniforms,
       depthTest: false,
       depthWrite: false,
+      // The class-row coordinate into the lookup atlas needs more precision
+      // than mediump gives: at 21 rows, mediump error is a few percent of a
+      // row, which bleeds a neighbouring object's material into this one.
+      precision: 'highp',
     });
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
     quad.frustumCulled = false;
@@ -276,9 +285,18 @@ export class StereoRenderer {
     }
   }
 
-  /** Repaint the passthrough as a different material. See `render/Restyle.js`. */
-  setStyle(style) {
-    applyStyleToUniforms(this.bgUniforms, style);
+  /** Repaint the passthrough: base material plus one per recognised object. */
+  setTheme(theme) {
+    this.classAtlas.update(theme);
+  }
+
+  /**
+   * Supply the per-pixel class labels the theme's object materials key off.
+   * Passing null falls back to painting everything with the base material.
+   */
+  setSegmentationMask(texture) {
+    this.bgUniforms.uMask.value = texture || null;
+    this.bgUniforms.uHasMask.value = texture ? 1 : 0;
   }
 
   /**

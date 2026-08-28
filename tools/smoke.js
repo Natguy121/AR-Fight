@@ -183,39 +183,138 @@ async function main() {
 
     // -------------------------------------------------------------- reskin
     console.log('\nReskin');
-    const before = await page.evaluate(() => ({
-      active: window.ARRESKIN.director.active,
-      chroma: window.ARRESKIN.renderer.bgUniforms.uChroma.value,
-    }));
+    // The room's own material now lives in row 0 of the class atlas rather
+    // than in loose uniforms, so these read it back from there.
+    const readBase = () => page.evaluate(() => {
+      const app = window.ARRESKIN;
+      const atlas = app.renderer.classAtlas;
+      const pd = atlas.paramTexture.image.data;
+      const rd = atlas.rampTexture.image.data;
+      const W = atlas.rampTexture.image.width;
+      return {
+        active: app.director.active,
+        chroma: pd[0] / 255,
+        rampDark: [rd[0], rd[1], rd[2]],
+        rampBright: [rd[(W - 1) * 4], rd[(W - 1) * 4 + 1], rd[(W - 1) * 4 + 2]],
+      };
+    });
+
+    const before = await readBase();
     check(before.active === false, 'starts with the room untouched');
-    // The passthrough style is the exact identity; chroma 1 is its signature.
-    check(Math.abs(before.chroma - 1) < 1e-6, 'untouched really means untouched (chroma 1)');
+    // The passthrough theme is the exact identity; chroma 1 over a linear
+    // grey ramp is its signature.
+    check(Math.abs(before.chroma - 1) < 0.01, 'untouched really means untouched (chroma 1)');
+    check(before.rampDark[0] === 0 && before.rampBright[0] === 255,
+      'and its ramp is the full linear grey', JSON.stringify(before));
 
     const transformed = await page.evaluate(async () => {
       const app = window.ARRESKIN;
       await app._transform({ change: false });
-      // Let the cross-fade settle so the uniforms hold the final style.
-      for (let i = 0; i < 120; i++) app.director.update(1 / 60);
-      app.renderer.setStyle(app.director.current);
-      const u = app.renderer.bgUniforms;
+      // Let the cross-fade settle so the atlas holds the final theme.
+      for (let i = 0; i < 120; i++) app.renderer.setTheme(app.director.update(1 / 60));
+      const atlas = app.renderer.classAtlas;
+      const rd = atlas.rampTexture.image.data;
+      const W = atlas.rampTexture.image.width;
       return {
         active: app.director.active,
         id: app.director.target.id,
         name: app.director.target.name,
-        chroma: u.uChroma.value,
-        ramp: u.uRamp.value.map((c) => [c.r, c.g, c.b]),
+        chroma: atlas.paramTexture.image.data[0] / 255,
+        rampDark: [rd[0], rd[1], rd[2]],
+        rampBright: [rd[(W - 1) * 4], rd[(W - 1) * 4 + 1], rd[(W - 1) * 4 + 2]],
+        objects: Object.keys(app.director.target.objects || {}),
       };
     });
-    check(transformed.active === true, 'transform applies a material', transformed.name);
+    check(transformed.active === true, 'transform applies a theme', transformed.name);
     check(transformed.chroma < 0.9, 'the shader is actually repainting, not passing through',
       `chroma=${transformed.chroma}`);
-    // The ramp must reach the shader, or the world stays grey.
-    const rampSpread = transformed.ramp[3].reduce((a, b) => a + b, 0)
-      - transformed.ramp[0].reduce((a, b) => a + b, 0);
-    check(rampSpread > 0.3, 'the colour ramp reached the shader uniforms',
+    check(transformed.objects.length >= 2,
+      'the theme carries a material for individual objects, not just the room',
+      transformed.objects.join(', '));
+    // The ramp must reach the atlas, or the world stays grey. It also has to
+    // keep a real dark-to-bright spread, which is what carries the shading.
+    const rampSpread = (transformed.rampBright.reduce((a, b) => a + b, 0)
+      - transformed.rampDark.reduce((a, b) => a + b, 0)) / 255;
+    check(rampSpread > 0.3, 'the colour ramp reached the shader lookup',
       `spread=${rampSpread.toFixed(2)}`);
 
     if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '2-transformed.png') });
+
+    // --- Object awareness. This is what separates a reskinned room from a
+    // colour filter, so it is checked against a real photograph rather than
+    // the synthetic camera: a cat sitting on a sofa, which DeepLab labels as
+    // both. Skipped with a note when the model has not been vendored, since
+    // `npm run fetch-deps` is optional and a fresh clone will not have it.
+    const segAvailable = await page.evaluate(() => window.ARRESKIN.segmenter.available);
+    if (!segAvailable) {
+      console.log('  note  segmentation model absent — run `npm run fetch-deps` to cover this path');
+    } else {
+      const seg = await page.evaluate(async () => {
+        const app = window.ARRESKIN;
+        const img = new Image();
+        img.src = '/tools/fixtures/cat-on-sofa.jpg';
+        await img.decode();
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+
+        // Drive the segmenter directly: the fake camera is a flat test
+        // pattern with no objects in it, so it can never exercise this.
+        app.segmenter._lastRunMs = -Infinity;
+        const ran = app.segmenter.update(c, performance.now() + 5000, true);
+        app.renderer.setSegmentationMask(app.segmenter.maskTexture);
+        return {
+          ran,
+          detected: [...app.segmenter.detected].sort(),
+          maskSize: [app.segmenter.maskWidth, app.segmenter.maskHeight],
+          imageSize: [img.naturalWidth, img.naturalHeight],
+          hasMask: app.renderer.bgUniforms.uHasMask.value,
+        };
+      });
+      check(seg.ran === true, 'the segmenter labelled a real photograph');
+      check(seg.detected.includes('sofa'),
+        'it recognised the sofa the cat is sitting on', seg.detected.join(', '));
+      check(seg.detected.includes('cat'), 'and the cat', seg.detected.join(', '));
+      // The mask is sampled with the same uv as the video, so any mismatch
+      // here would slide every object's material off the object it belongs to.
+      check(seg.maskSize[0] === seg.imageSize[0] && seg.maskSize[1] === seg.imageSize[1],
+        'the mask is the same resolution as the frame, so it lines up',
+        `${seg.maskSize} vs ${seg.imageSize}`);
+      check(seg.hasMask === 1, 'the mask reached the shader');
+
+      // And the payoff: with that mask in place, two different classes must
+      // actually resolve to two different materials in the atlas.
+      const distinct = await page.evaluate(() => {
+        const app = window.ARRESKIN;
+        const atlas = app.renderer.classAtlas;
+        const data = atlas.rampTexture.image.data;
+        const W = atlas.rampTexture.image.width;
+        const mid = (row) => {
+          const o = (row * W + (W >> 1)) * 4;
+          return [data[o], data[o + 1], data[o + 2]];
+        };
+        const theme = app.director.target;
+        const names = Object.keys(theme.objects || {});
+        const classes = window.__CLASSES;
+        const base = mid(0);
+        const diffs = names.map((n) => {
+          const m = mid(classes.indexOf(n));
+          return [n, Math.abs(m[0] - base[0]) + Math.abs(m[1] - base[1]) + Math.abs(m[2] - base[2])];
+        });
+        return { themeName: theme.name, diffs };
+      });
+      // This is a check on the *plumbing* — that each class ended up with its
+      // own row and the rows are not all copies of row 0. Whether the themes
+      // are well designed is settled deterministically over every theme by
+      // `npm test`; here only one randomly chosen theme is loaded, so the bar
+      // is set well below that test's floor to stay honest about what it can
+      // actually prove.
+      const weakest = distinct.diffs.reduce((lo, d) => (d[1] < lo[1] ? d : lo), ['none', Infinity]);
+      check(distinct.diffs.length > 0 && weakest[1] > 20,
+        'each recognised object gets its own row in the atlas, not a copy of the room',
+        `${distinct.themeName}: weakest is ${weakest[0]} at ${weakest[1]}`);
+    }
 
     // --- The guarantee the whole design is built around: looking around must
     // never re-decide the material. Simulated here by driving the head through
@@ -246,15 +345,14 @@ async function main() {
     check(changed.id !== transformed.id, 'change picks a different material',
       `${transformed.id} -> ${changed.id}`);
 
-    const off = await page.evaluate(() => {
+    await page.evaluate(() => {
       const app = window.ARRESKIN;
       app._onButton('off');
-      for (let i = 0; i < 120; i++) app.director.update(1 / 60);
-      app.renderer.setStyle(app.director.current);
-      return { active: app.director.active, chroma: app.renderer.bgUniforms.uChroma.value };
+      for (let i = 0; i < 120; i++) app.renderer.setTheme(app.director.update(1 / 60));
     });
+    const off = await readBase();
     check(off.active === false, 'off returns to the untouched room');
-    check(Math.abs(off.chroma - 1) < 1e-6, 'and restores exact passthrough', `chroma=${off.chroma}`);
+    check(Math.abs(off.chroma - 1) < 0.01, 'and restores exact passthrough', `chroma=${off.chroma}`);
 
     // --- The choice has to outlive a reload, or every glance at the phone
     // resets the room. Re-apply, reload the page, and check it comes back.
@@ -377,7 +475,7 @@ async function main() {
 
     // Probes for the optional local MediaPipe copy are *meant* to 404 when
     // fetch-deps has not been run; a 404 on anything else is a broken path.
-    const expected404 = /^\/(vendor\/mediapipe\/|models\/hand_landmarker\.task|favicon\.ico)/;
+    const expected404 = /^\/(vendor\/mediapipe\/|models\/(hand_landmarker\.task|deeplab_v3\.tflite)|favicon\.ico)/;
     const unexpected404 = [...new Set(notFound)].filter((p) => !expected404.test(p));
     check(unexpected404.length === 0, 'every first-party asset resolves', unexpected404.join(', '));
 
@@ -389,7 +487,15 @@ async function main() {
     if (notFound.length) {
       console.log(`  note  optional assets absent (expected): ${[...new Set(notFound)].join(', ')}`);
     }
-    console.log('  note  MediaPipe CDN is unreachable here, so the pointer/gaze fallback was exercised');
+    // Which MediaPipe path this run actually took. Worth stating plainly: with
+    // the vendored copy present these checks cover real inference, and without
+    // it they cover the fallbacks instead — two quite different runs.
+    const mp = await page.evaluate(() => ({
+      hands: window.ARRESKIN.handTracker.available,
+      seg: window.ARRESKIN.segmenter.available,
+    }));
+    console.log(`  note  hand tracking ${mp.hands ? 'loaded' : 'unavailable — pointer/gaze fallback exercised'}`);
+    console.log(`  note  segmentation ${mp.seg ? 'loaded — object recognition covered' : 'unavailable — whole-room fallback exercised'}`);
   } finally {
     if (browser) await browser.close();
     server.kill();

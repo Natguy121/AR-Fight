@@ -1,4 +1,5 @@
 import config from '../config.js';
+import { assetUrl } from '../util/assetUrl.js';
 
 /**
  * Thin wrapper over MediaPipe's `HandLandmarker`.
@@ -26,7 +27,12 @@ export class HandTracker {
    * with no config change. A HEAD request keeps this cheap.
    */
   static async _resolveSource(onProgress) {
-    const { source, localBase, cdnBase, localModelUrl, cdnModelUrl } = config.hands;
+    const { source, cdnBase, cdnModelUrl } = config.hands;
+    // Pinned to the page, not to this module — the probe below uses `fetch`
+    // and the loader uses `import`, which resolve relative paths against
+    // different bases. See assetUrl.js.
+    const localBase = assetUrl(config.hands.localBase);
+    const localModelUrl = assetUrl(config.hands.localModelUrl);
 
     const probe = async (url) => {
       try {

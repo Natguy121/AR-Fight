@@ -21,9 +21,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const MP_VERSION = '0.10.14';
 const MP_DEST = path.join(ROOT, 'vendor', 'mediapipe');
-const MODEL_DEST = path.join(ROOT, 'models', 'hand_landmarker.task');
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+const MODELS = [
+  {
+    dest: path.join(ROOT, 'models', 'hand_landmarker.task'),
+    url: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+  },
+  {
+    // DeepLab-v3, Pascal VOC classes — this is what lets the app tell a chair
+    // from a sofa from a TV, and give each one its own treatment. Without it
+    // the app can only repaint the whole view uniformly.
+    dest: path.join(ROOT, 'models', 'deeplab_v3.tflite'),
+    url: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite',
+  },
+];
 
 /** Files the browser actually loads from the tasks-vision package. */
 const MP_FILES = [
@@ -85,8 +95,8 @@ function fetchMediaPipe() {
 async function main() {
   fetchMediaPipe();
 
-  console.log('\nFetching the hand landmark model ...');
-  await download(MODEL_URL, MODEL_DEST);
+  console.log('\nFetching models ...');
+  for (const m of MODELS) await download(m.url, m.dest);
 
   console.log(
     '\nDone. The app detects these automatically at boot and will now run\n' +

@@ -8,7 +8,7 @@
  *      phone that is also decoding video and rendering two eyes.
  *   2. It is small, ordinary JSON, so a vision model can *author* one. The
  *      renderer cannot tell a hand-tuned preset from a Claude-authored style,
- *      which is the whole point of the split — see `StyleDirector`.
+ *      which is the whole point of the split — see `ThemeDirector`.
  *
  * Because a model will eventually be filling these in, every field is
  * range-checked and every malformed value falls back rather than throwing:

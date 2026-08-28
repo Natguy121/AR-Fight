@@ -2,10 +2,11 @@
  * The style source that actually looks at your room.
  *
  * Instead of picking blindly from a list, this hands Claude a frame from the
- * camera and asks it to choose a material *for what it can see* — cold stone
- * for a bare hallway, something warmer for a cluttered living room. The reply
- * is the same small bundle of numbers a preset is, so nothing downstream
- * changes: `StyleDirector` validates it with `makeStyle` and the shader
+ * camera and asks it to invent a world *for what it can actually see* — and,
+ * crucially, to say what each recognised object becomes in it, so the TV and
+ * the sofa get different answers rather than the same tint. The reply is the
+ * same small bundle of numbers a built-in theme is, so nothing downstream
+ * changes: `ThemeDirector` validates it with `makeTheme` and the shader
  * renders it identically. That symmetry is the point of the seam.
  *
  * ## Why this talks to a relay instead of to Anthropic directly
@@ -43,24 +44,41 @@ export function captureFrameBase64(video, maxWidth = 512, quality = 0.8) {
  * most likely to need tuning after seeing real output, and having two copies
  * drift apart would mean the two paths quietly produce different styles.
  */
-export const SYSTEM_PROMPT = `You choose materials for an augmented-reality app that repaints the real world.
+export const SYSTEM_PROMPT = `You dress real rooms for an augmented-reality app.
 
-The user is looking at a real room through their phone. You will be shown a photo of it. Choose ONE material for everything in view to appear to be made of — carved ice, cast iron, jade, bone, moss-covered ruin, anything with a strong physical character.
+The user is looking at a real room through their phone. You will be shown a photo of it. The app can recognise individual objects in view — chair, sofa, tv, dining table, potted plant, bottle, person — and paint each one as a different material. Your job is to invent one coherent world and say what each thing becomes in it.
 
-The renderer keeps the real shading and only replaces appearance, so real objects stay reachable. Your job is picking the material, not describing the room.
+The renderer keeps every object's real shading and position and only replaces its appearance, so the room stays reachable — a chair repainted as iron is still exactly where the chair is, and still sittable.
 
-How the fields work:
-- ramp: 4 hex colours, darkest to brightest. This IS the material. It must keep a wide spread from dark to light — the ramp carries the real shading, and a flat ramp makes the room look painted-on and unreachable. Never make all four similar.
-- chroma (0-1): how much of the room's real colour survives. Keep it LOW (0.03-0.15). High values look like a filter over reality instead of a change of substance.
-- contrast (0.2-3): steepens shading. ~1.1-1.4 for most materials; below 1 flattens.
+Reply with a JSON object:
+{
+  "id": short-slug,
+  "name": 2-4 words,
+  "blurb": one short evocative sentence, second person,
+  "base": <material>,          // walls, floor, everything unrecognised
+  "objects": {                 // optional; omit any you have nothing to say about
+    "tv": <material>, "sofa": <material>, "chair": <material>,
+    "dining table": <material>, "potted plant": <material>, "person": <material>
+  }
+}
+
+A <material> is:
+- ramp: 4 hex colours, darkest to brightest. This IS the material. It must keep a wide spread from dark to light — the ramp carries the real shading, and a flat ramp makes things look painted-on and unreachable. Never make all four similar.
+- chroma (0-1): how much of the object's real colour survives. Keep LOW (0.03-0.15). High values look like a filter over a sofa instead of a sofa made of something else. The exception is a screen or a light source, where 0.4+ keeps it looking lit.
+- contrast (0.2-3): steepens shading. ~1.1-1.4 usually; below 1 flattens.
 - texture: none | grain | veins | brushed | hammered | weave
-- textureScale (1-400): higher is finer. grain ~150, veins ~30, brushed ~120, hammered ~90.
-- textureStrength (0-1): 0.1-0.3 is convincing; above 0.4 buries the shape.
-- edgeStrength (0-1) + edgeColor: outlines. High values with a dark colour read as ink; high with a bright colour reads as glowing.
-- sheen (0-1.5) + sheenColor: makes bright areas bloom. High for metal, ice, glaze; near zero for stone, cloth, moss.
-- name: 2-3 words. blurb: one short evocative sentence, second person.
+- textureScale (1-400): higher is finer. grain ~150, veins ~30, brushed ~120, hammered ~90, weave ~220.
+- textureStrength (0-1): 0.1-0.3 convinces; above 0.4 buries the shape.
+- edgeStrength (0-1) + edgeColor: outlines, drawn from the object's own detail. High + dark reads as ink or as a drawn line; high + bright reads as glowing or lit from within.
+- sheen (0-1.5) + sheenColor: makes bright areas bloom. High for metal, ice, glaze, screens; near zero for stone, cloth, moss.
 
-Choose something that suits what you see, and vary your choices — do not default to the same material every time.`;
+Make the objects genuinely different from the base and from each other — that contrast is the entire effect, and it has to live in the RAMP. Outlines are drawn from detail in the photo, so they appear at a silhouette and at creases and nowhere else; across the broad flat middle of a sofa there is no detail and all that shows is the ramp. Two objects that share a ramp and differ only in edgeColor read as one tinted room, which is the failure mode to avoid. Give every object a ramp clearly apart from the base's — different hue, or clearly lighter or darker — and use edges and sheen on top of that, never instead of it.
+
+Two worked ideas:
+- A TV becomes a whiteboard with a near-white ramp, contrast ~0.7 and edgeStrength 1.0 in dark ink: the screen's own picture is redrawn as marker strokes.
+- In a dark room, a sofa becomes a gaming couch lit magenta from beneath — a ramp running deep plum to hot pink, well above the walls in brightness, with edgeStrength ~1.0 in hot magenta on top. The lit furniture is what you see; the room recedes.
+
+Choose something suited to what you actually see, and vary your choices — do not default to the same world every time.`;
 
 export class ClaudeStylist {
   /**
@@ -105,7 +123,7 @@ export class ClaudeStylist {
     }
     const body = await res.json();
     if (!body || typeof body !== 'object') throw new Error('Style service sent an unreadable reply.');
-    return body.style || body;
+    return body.theme || body.style || body;
   }
 
   async _direct(image, exclude) {
@@ -151,9 +169,7 @@ export function buildRequest(imageBase64, exclude) {
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
         {
           type: 'text',
-          text: `Choose one material for this room.${avoid}\n\nReply with only a JSON object with these keys: `
-            + 'id, name, blurb, ramp (4 hex strings), chroma, contrast, texture, textureScale, '
-            + 'textureStrength, edgeStrength, edgeColor, sheen, sheenColor. No prose, no code fence.',
+          text: `Dress this room.${avoid}\n\nReply with only the JSON object. No prose, no code fence.`,
         },
       ],
     }],

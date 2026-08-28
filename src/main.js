@@ -14,9 +14,11 @@ import { WorldUI } from './ui/WorldUI.js';
 import { Reticle } from './ui/Reticle.js';
 import { Sound } from './fx/Sound.js';
 
-import { StyleDirector, PresetSource } from './style/StyleDirector.js';
+import { ThemeDirector, ThemeSource } from './style/ThemeDirector.js';
 import { ClaudeStylist } from './style/ClaudeStylist.js';
-import { STYLES } from './style/StyleLibrary.js';
+import { THEMES_ALL } from './style/ThemeLibrary.js';
+import { SceneSegmenter } from './vision/SceneSegmenter.js';
+import { CLASSES } from './style/Theme.js';
 
 const RELAY_KEY = 'ar-reskin-relay';
 const APIKEY_KEY = 'ar-reskin-key';
@@ -83,6 +85,10 @@ class ARReskin {
     // is exactly why what you see stays lined up with what you can touch.
     this.scene = new THREE.Scene();
 
+    // What lets this be more than a colour filter: it labels every pixel with
+    // what it belongs to, so the TV and the sofa can become different things.
+    this.segmenter = new SceneSegmenter();
+
     this.handTracker = new HandTracker();
     this.handSet = new HandSet();
     this.pointerHand = new PointerHand(this.dom.canvas, this.frameMap);
@@ -103,8 +109,8 @@ class ARReskin {
       directKey: this.ai.directKey,
       maxWidth: config.reskin.frameMaxWidth,
     });
-    this.presets = new PresetSource(STYLES);
-    this.director = new StyleDirector({
+    this.presets = new ThemeSource(THEMES_ALL);
+    this.director = new ThemeDirector({
       source: this.claude.configured ? this.claude : this.presets,
       storage: config.reskin.persist ? tryLocalStorage() : null,
       fadeSeconds: config.reskin.fadeSeconds,
@@ -120,6 +126,10 @@ class ARReskin {
 
     /** True when stereo calibration mode is active. */
     this._stereoCalibrating = false;
+    /** Forces one theme upload; the fade handles the rest. */
+    this._themeDirty = true;
+    /** Objects named in the last mask, joined, so the UI only redraws on change. */
+    this._detectedLabel = '';
 
     this._bindUI();
     this._updateFlipButton();
@@ -399,6 +409,13 @@ class ARReskin {
       await motionPromise;
       this.head.start();
 
+      if (config.segmentation.enabled) {
+        // Not fatal if it fails — the app falls back to painting everything
+        // with the theme's base material, which is what it did before it
+        // could recognise anything.
+        await this.segmenter.load((msg) => this._setLoading(msg));
+      }
+
       this._setLoading('Loading hand tracking…');
       const ok = await this.handTracker.load((msg) => this._setLoading(msg));
       if (!ok) {
@@ -452,6 +469,12 @@ class ARReskin {
     this._updateOrientationDebug(nowMs);
 
     const hasNewFrame = this.cameraFeed.poll();
+
+    if (this.segmenter.update(this.cameraFeed.video, nowMs, hasNewFrame)) {
+      this.renderer.setSegmentationMask(this.segmenter.maskTexture);
+      this._onDetectionsChanged();
+    }
+
     if (this.handTracker.available) {
       const result = this.handTracker.detect(this.cameraFeed.video, nowMs, hasNewFrame);
       this.handSet.update(
@@ -472,7 +495,12 @@ class ARReskin {
     // cross-fade that an explicit button press started. Nothing about where
     // the head is pointing reaches the director, which is what makes a room
     // stay put when you look away and back.
-    this.renderer.setStyle(this.director.update(dt));
+    if (this.director.isFading || this._themeDirty) {
+      this._themeDirty = false;
+      this.renderer.setTheme(this.director.update(dt));
+    } else {
+      this.director.update(dt);
+    }
 
     this.renderer.updateCameras(this.head.position, this.head.quaternion);
     this.reticle.update(this.head.position, this.head.quaternion, this.ui.dwellProgress);
@@ -500,11 +528,19 @@ class ARReskin {
     if (d.lastError) {
       this.ui.setPrompt('Could not reach Claude', `${d.lastError.message} Using a built-in material instead.`, 'error');
     } else if (d.active) {
-      this.ui.setPrompt(d.target.name, d.target.blurb, 'success');
+      const styled = Object.keys(d.target.objects || {})
+        .filter((name) => this.segmenter.detected.has(name));
+      const detail = styled.length
+        ? `${d.target.blurb}  —  ${styled.join(', ')} remade.`
+        : d.target.blurb;
+      this.ui.setPrompt(d.target.name, detail, 'success');
     } else {
+      const seen = this._detectedLabel;
       this.ui.setPrompt(
         'Your room, as it is',
-        'Transform it and everything you can see becomes another material — but stays exactly where it is, so you can still reach out and touch it.',
+        seen
+          ? `Transform it and each thing becomes something else. I can see: ${seen}.`
+          : 'Transform it and everything you can see becomes something else — but stays exactly where it is, so you can still reach out and touch it.',
       );
     }
 
@@ -523,6 +559,20 @@ class ARReskin {
     this._syncTransformButton();
   }
 
+  /**
+   * Report what the app can currently see, so it is obvious whether object
+   * awareness is actually working. If the room reads as one flat material,
+   * the first question is always whether anything was recognised at all —
+   * and this answers it without a debug build.
+   */
+  _onDetectionsChanged() {
+    const names = [...this.segmenter.detected].sort();
+    const label = names.join(', ');
+    if (label === this._detectedLabel) return;
+    this._detectedLabel = label;
+    if (!this._stereoCalibrating) this._refreshUI();
+  }
+
   /** The DOM shortcut, for when you are holding the phone rather than wearing it. */
   _syncTransformButton() {
     const btn = this.dom.btnTransform;
@@ -539,6 +589,7 @@ class ARReskin {
     this._syncTransformButton();
     try {
       await (change ? this.director.next() : this.director.transform());
+      this._themeDirty = true;
       this.sound.confirm();
     } catch {
       // Claude was configured but unreachable. Falling back keeps the app
@@ -554,6 +605,7 @@ class ARReskin {
       }
       this.director.source = this.claude.configured ? this.claude : this.presets;
       this.director.lastError = err;
+      this._themeDirty = true;
       this.sound.cancel();
     }
     this._refreshUI();
@@ -574,6 +626,7 @@ class ARReskin {
       case 'off':
         this.sound.cancel();
         this.director.off();
+        this._themeDirty = true;
         this._refreshUI();
         break;
 
@@ -710,6 +763,8 @@ function tryLocalStorage() {
 try {
   const app = new ARReskin();
   window.ARRESKIN = app;
+  // Exposed for the smoke test, which indexes the class-atlas rows by name.
+  window.__CLASSES = CLASSES;
 } catch (err) {
   console.error('[AR-Reskin] Failed to initialise:', err);
   const gateError = document.getElementById('gate-error');

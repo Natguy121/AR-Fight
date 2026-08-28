@@ -1,9 +1,9 @@
-import { makeStyle, lerpStyle, passthroughStyle } from './Style.js';
+import { makeTheme, lerpTheme, passthroughTheme } from './Theme.js';
 
-const STORAGE_KEY = 'ar-reskin-style';
+const STORAGE_KEY = 'ar-reskin-theme';
 
 /**
- * Owns which material the world is currently wearing.
+ * Owns which world the room is currently wearing.
  *
  * The design constraint this exists to satisfy: **the look is chosen once and
  * then held.** Turn your head away and back and the room is exactly as you
@@ -18,12 +18,13 @@ const STORAGE_KEY = 'ar-reskin-style';
  * boot, so reloading — or coming back tomorrow — leaves your room looking the
  * way you last saw it, rather than resetting to a stranger's idea of it.
  *
- * Where the style *comes from* is pluggable (`source`). Today that is the
- * preset library; with an API key it becomes Claude, choosing based on what it
- * can actually see in the room. The stability guarantee is unaffected either
- * way, because it is a property of this class rather than of the source.
+ * Where the theme *comes from* is pluggable (`source`). Today that is the
+ * built-in library; with an API key it becomes Claude, choosing based on what
+ * it can actually see in the room and authoring a treatment per object. The
+ * stability guarantee is unaffected either way, because it is a property of
+ * this class rather than of the source.
  */
-export class StyleDirector {
+export class ThemeDirector {
   /**
    * @param {object} opts
    * @param {{name: string, pick: (ctx: object) => Promise<object>}} opts.source
@@ -35,7 +36,7 @@ export class StyleDirector {
     this.storage = storage;
     this.fadeSeconds = fadeSeconds;
 
-    this._off = passthroughStyle();
+    this._off = passthroughTheme();
     /** What is actually on screen this frame. */
     this.current = this._off;
     /** What `current` is settling toward; equal to `current` when at rest. */
@@ -44,7 +45,7 @@ export class StyleDirector {
     this._from = this._off;
     this._fadeT = 1;
 
-    /** True once a style has been chosen — i.e. the world is transformed. */
+    /** True once a theme has been chosen — i.e. the world is transformed. */
     this.active = false;
     /** True while `source.pick` is in flight. Only the UI cares. */
     this.pending = false;
@@ -83,12 +84,11 @@ export class StyleDirector {
     this.pending = true;
     this.lastError = null;
     try {
-      const raw = await this.source.pick({ exclude });
-      const style = makeStyle(raw);
-      this._settleTo(style);
+      const theme = makeTheme(await this.source.pick({ exclude }));
+      this._settleTo(theme);
       this.active = true;
-      this._persist(style);
-      return style;
+      this._persist(theme);
+      return theme;
     } catch (err) {
       this.lastError = err;
       throw err;
@@ -104,23 +104,23 @@ export class StyleDirector {
     this._persist(null);
   }
 
-  /** Adopt a style directly, bypassing the source. Used by restore and tests. */
-  set(style, { fade = true, persist = true } = {}) {
-    const s = makeStyle(style);
-    this._settleTo(s, { fade });
-    this.active = s.id !== this._off.id;
-    if (persist) this._persist(this.active ? s : null);
-    return s;
+  /** Adopt a theme directly, bypassing the source. Used by restore and tests. */
+  set(raw, { fade = true, persist = true } = {}) {
+    const theme = makeTheme(raw);
+    this._settleTo(theme, { fade });
+    this.active = theme.id !== this._off.id;
+    if (persist) this._persist(this.active ? theme : null);
+    return theme;
   }
 
-  _settleTo(style, { fade = true } = {}) {
+  _settleTo(theme, { fade = true } = {}) {
     this._from = this.current;
-    this.target = style;
+    this.target = theme;
     if (fade && this.fadeSeconds > 0) {
       this._fadeT = 0;
     } else {
       this._fadeT = 1;
-      this.current = style;
+      this.current = theme;
     }
   }
 
@@ -129,21 +129,21 @@ export class StyleDirector {
    *
    * Note what this deliberately cannot do: it has no access to the source and
    * never consults the head pose, so no amount of looking around — or of time
-   * simply passing — can change which style is being shown.
+   * simply passing — can change which theme is being shown.
    */
   update(dt) {
     if (this._fadeT >= 1) return this.current;
     this._fadeT = Math.min(1, this._fadeT + dt / this.fadeSeconds);
     this.current = this._fadeT >= 1
       ? this.target
-      : lerpStyle(this._from, this.target, this._fadeT);
+      : lerpTheme(this._from, this.target, this._fadeT);
     return this.current;
   }
 
-  _persist(style) {
+  _persist(theme) {
     if (!this.storage) return;
     try {
-      if (style) this.storage.setItem(STORAGE_KEY, JSON.stringify(style));
+      if (theme) this.storage.setItem(STORAGE_KEY, JSON.stringify(theme));
       else this.storage.removeItem(STORAGE_KEY);
     } catch {
       // Private browsing, or storage full. Losing the memory across reloads is
@@ -171,25 +171,25 @@ export class StyleDirector {
 }
 
 /**
- * The offline style source: pick from the hand-tuned library.
+ * The offline source: pick from the hand-authored library.
  *
- * Deliberately shaped like the eventual Claude source — one async `pick` that
- * returns something `makeStyle` accepts — so swapping them is a constructor
- * argument rather than a rewrite.
+ * Deliberately shaped like the Claude source — one async `pick` that returns
+ * something `makeTheme` accepts — so swapping them is a constructor argument
+ * rather than a rewrite.
  */
-export class PresetSource {
-  /** @param {object[]} styles @param {() => number} [random] Injectable for tests. */
-  constructor(styles, random = Math.random) {
-    this.name = 'Presets';
-    this.styles = styles;
+export class ThemeSource {
+  /** @param {object[]} themes @param {() => number} [random] Injectable for tests. */
+  constructor(themes, random = Math.random) {
+    this.name = 'Built-in';
+    this.themes = themes;
     this.random = random;
   }
 
   async pick({ exclude } = {}) {
-    const pool = this.styles.filter((s) => s.id !== exclude);
-    const from = pool.length ? pool : this.styles;
+    const pool = this.themes.filter((t) => t.id !== exclude);
+    const from = pool.length ? pool : this.themes;
     return from[Math.floor(this.random() * from.length) % from.length];
   }
 }
 
-export default StyleDirector;
+export default ThemeDirector;
