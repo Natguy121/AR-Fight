@@ -97,7 +97,7 @@ export class HandTracker {
       }
       this.lastError = err;
       this.available = false;
-      console.warn('[AR-Fight] Hand tracking unavailable:', err);
+      console.warn('[Remade] Hand tracking unavailable:', err);
       return false;
     }
   }
@@ -122,7 +122,7 @@ export class HandTracker {
     } catch (err) {
       this.lastError = err;
       this.available = false;
-      console.warn('[AR-Fight] Hand tracking unavailable (CPU fallback failed):', err);
+      console.warn('[Remade] Hand tracking unavailable (CPU fallback failed):', err);
       return false;
     }
   }
@@ -148,7 +148,7 @@ export class HandTracker {
     try {
       this.lastResult = this.landmarker.detectForVideo(video, timestamp);
     } catch (err) {
-      console.warn('[AR-Fight] Hand inference failed:', err);
+      console.warn('[Remade] Hand inference failed:', err);
       this.lastResult = null;
     }
     return this.lastResult;

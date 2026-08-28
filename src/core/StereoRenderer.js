@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import config from '../config.js';
+import { RESTYLE_GLSL, createStyleUniforms, applyStyleToUniforms } from '../render/Restyle.js';
+import { passthroughStyle } from '../style/Style.js';
 
 /**
  * Renders the world twice — once per eye — over a camera passthrough
@@ -30,6 +32,8 @@ uniform float uHasVideo;
 uniform int uVideoRotation; // quarter turns CW to undo, from VideoFrameMap.rotation
 varying vec2 vNdc;
 
+${RESTYLE_GLSL}
+
 // Exact inverse of VideoFrameMap._rotateToEffective — must be kept in sync
 // with it, or a rotated stream drifts out of alignment with the landmarks
 // reconstructed from the same frame.
@@ -50,7 +54,9 @@ void main() {
 
   vec3 rgb = vec3(0.02, 0.03, 0.05);
   if (uHasVideo > 0.5) {
-    rgb = texture2D(uVideo, uv).rgb;
+    // Restyle only where there is a real frame: the fallback above is chrome,
+    // not world, and repainting it as ice would just look like a bug.
+    rgb = restyle(texture2D(uVideo, uv).rgb, uv, uVideo);
   }
   gl_FragColor = vec4(rgb, 1.0);
 }
@@ -204,7 +210,13 @@ export class StereoRenderer {
       uMirror: { value: 0 },
       uHasVideo: { value: 0 },
       uVideoRotation: { value: 0 },
+      // The restyle stage shares this material rather than running as a second
+      // pass: it is a pure per-pixel recolour of a value already in a register,
+      // so a separate pass would cost a full-screen texture round-trip per eye
+      // to achieve exactly the same pixels.
+      ...createStyleUniforms(),
     };
+    applyStyleToUniforms(this.bgUniforms, passthroughStyle());
     const mat = new THREE.ShaderMaterial({
       vertexShader: BACKGROUND_VERT,
       fragmentShader: BACKGROUND_FRAG,
@@ -252,10 +264,21 @@ export class StereoRenderer {
    *   assumes video-normalised space (v=0 at the top of the decoded frame),
    *   which a flipY=true upload contradicts and samples upside down.
    */
-  setVideoTexture(texture, { mirrored = false } = {}) {
+  setVideoTexture(texture, { mirrored = false, width = 0, height = 0 } = {}) {
     this.bgUniforms.uVideo.value = texture;
     this.bgUniforms.uHasVideo.value = texture ? 1 : 0;
     this.bgUniforms.uMirror.value = mirrored ? 1 : 0;
+    if (width > 0 && height > 0) {
+      // Edge detection taps neighbouring source pixels, so it needs the real
+      // capture resolution — guessing here would make outlines either blurry
+      // (too large) or vanish into sampling noise (too small).
+      this.bgUniforms.uTexel.value.set(1 / width, 1 / height);
+    }
+  }
+
+  /** Repaint the passthrough as a different material. See `render/Restyle.js`. */
+  setStyle(style) {
+    applyStyleToUniforms(this.bgUniforms, style);
   }
 
   /**

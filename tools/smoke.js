@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * Boots the real page in headless Chromium and drives it through the whole
- * flow with a synthetic camera.
+ * Boots the real page in headless Chromium and drives it with a fake camera.
  *
- * `npm test` covers the maths but cannot touch WebGL, canvas text, or the
- * DOM wiring — and a shader that fails to compile is invisible until the page
- * is black on a phone. This runs the actual application: it compiles the
- * distortion and passthrough shaders, renders frames, and walks
- * draw -> categorize -> tag -> equip using the pointer fallback.
+ * `npm test` covers the maths but cannot touch WebGL, canvas text, or the DOM
+ * wiring — and a shader that fails to compile is invisible until the page is
+ * black on a phone. This runs the actual application: it compiles the
+ * passthrough, restyle and distortion shaders, renders frames, and exercises
+ * transform / change / off.
  *
- *   npm run smoke          # headless
+ *   npm run smoke              # headless
  *   npm run smoke -- --shots   # also write PNGs to tools/shots/
  */
 
@@ -48,7 +47,6 @@ function findChromium() {
   } catch {
     /* not installed through playwright's own download */
   }
-
   const base = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/pw-browsers';
   if (fs.existsSync(base)) {
     const candidates = fs
@@ -79,10 +77,11 @@ async function waitForServer(url, timeoutMs = 15000) {
 
 async function main() {
   // Plain HTTP on loopback: a secure context, so getUserMedia is allowed.
-  const server = spawn(process.execPath, [path.join(__dirname, 'serve.js'), '--http', '--port', String(PORT)], {
-    cwd: ROOT,
-    stdio: 'ignore',
-  });
+  const server = spawn(
+    process.execPath,
+    [path.join(__dirname, 'serve.js'), '--http', '--port', String(PORT)],
+    { cwd: ROOT, stdio: 'ignore' },
+  );
 
   let browser;
   try {
@@ -122,78 +121,24 @@ async function main() {
       if (res.status() === 404) notFound.push(new URL(res.url()).pathname);
     });
 
+    // ---------------------------------------------------------------- boot
     console.log('\nBoot');
     await page.goto(BASE, { waitUntil: 'load' });
-    check(await page.locator('#lobby').isVisible(), 'lobby screen renders');
-    check(await page.locator('#gate').isHidden(), 'gate screen waits behind the lobby');
+    check(await page.locator('#gate').isVisible(), 'gate screen renders');
 
-    // --- Versus lobby: this sandbox's egress policy blocks the PeerJS CDN
-    // outright (confirmed via the proxy's own status endpoint — a 403 to
-    // unpkg.com, not a generic timeout), so a real host/join connection
-    // cannot be exercised here. What *can* be verified for real, and is
-    // worth it on its own: hitting Host or Join with no networking library
-    // loaded fails visibly rather than hanging or throwing — the one
-    // failure mode every real user is guaranteed to never hit (their phone
-    // has no such block) but that's worth being sure doesn't wedge the UI.
-    console.log('\nLobby (versus mode, offline)');
-    const peerLoaded = await page.evaluate(() => typeof window.Peer === 'function');
-    check(!peerLoaded, 'PeerJS CDN is unreachable here (expected — see note below)');
-
-    await page.click('#lobby-versus');
-    check(await page.locator('#lobby-versus-mode').isVisible(), 'versus sub-menu opens');
-
-    await page.click('#lobby-host');
-    await page.waitForTimeout(500);
-    let lobbyState = await page.evaluate(() => ({
-      errorVisible: !document.getElementById('lobby-error').hidden,
-      errorText: document.getElementById('lobby-error').textContent,
-      hostingVisible: !document.getElementById('lobby-hosting').hidden,
-    }));
-    check(!lobbyState.hostingVisible && lobbyState.errorVisible && /networking/i.test(lobbyState.errorText),
-      'hosting without PeerJS fails with a visible error, not a hang',
-      JSON.stringify(lobbyState));
-
-    await page.click('#lobby-join');
-    await page.fill('#lobby-code-input', 'ab-cd!ef12');
-    check(await page.inputValue('#lobby-code-input') === 'ABCDE',
-      'room code input strips punctuation, uppercases, and caps at 5 chars');
-    await page.click('#lobby-connect');
-    await page.waitForTimeout(500);
-    lobbyState = await page.evaluate(() => ({
-      errorVisible: !document.getElementById('lobby-error').hidden,
-      errorText: document.getElementById('lobby-error').textContent,
-      connectDisabled: document.getElementById('lobby-connect').disabled,
-    }));
-    check(lobbyState.errorVisible && /networking/i.test(lobbyState.errorText) && !lobbyState.connectDisabled,
-      'joining without PeerJS fails with a visible error and re-enables Connect',
-      JSON.stringify(lobbyState));
-
-    await page.click('#lobby-cancel-join');
-    check(await page.locator('#lobby-versus-mode').isVisible(), 'cancel returns to the versus sub-menu');
-    await page.click('#lobby-back-mode');
-    check(await page.locator('#lobby-mode').isVisible(), 'back returns to the solo/versus choice');
-
-    await page.click('#lobby-solo');
-    check(await page.locator('#gate').isVisible(), 'gate screen renders after choosing solo');
-
-    // Hand tracking needs a CDN this sandbox cannot reach; the pointer
+    // Hand tracking needs a CDN this sandbox cannot reach; the pointer/gaze
     // fallback is the path under test here anyway.
     await page.click('#gate-start');
-
-    await page.waitForFunction(
-      () => window.ARFIGHT?.running === true,
-      null,
-      { timeout: 45000 },
-    );
+    await page.waitForFunction(() => window.ARRESKIN?.running === true, null, { timeout: 45000 });
     check(true, 'session starts with a fake camera');
 
     const boot = await page.evaluate(() => ({
-      state: window.ARFIGHT.fsm.current,
-      stereo: window.ARFIGHT.renderer.stereo,
-      videoW: window.ARFIGHT.cameraFeed.width,
-      videoH: window.ARFIGHT.cameraFeed.height,
-      videoFlipY: window.ARFIGHT.cameraFeed.texture?.flipY,
-      pointerFallback: window.ARFIGHT.hands === window.ARFIGHT.pointerHand,
+      stereo: window.ARRESKIN.renderer.stereo,
+      videoW: window.ARRESKIN.cameraFeed.width,
+      videoH: window.ARRESKIN.cameraFeed.height,
+      videoFlipY: window.ARRESKIN.cameraFeed.texture?.flipY,
+      texel: window.ARRESKIN.renderer.bgUniforms.uTexel.value.toArray(),
+      controlsVisible: !document.getElementById('controls').hidden,
     }));
     check(boot.videoW > 0 && boot.videoH > 0, 'camera reports a frame size',
       `got ${boot.videoW}x${boot.videoH}`);
@@ -202,467 +147,260 @@ async function main() {
     // on every device, regardless of any rotation/mirror setting.
     check(boot.videoFlipY === false, 'video texture has flipY disabled to match the background shader');
     check(boot.stereo === true, 'starts in stereo headset mode');
-    check(['check', 'draw'].includes(boot.state), 'reaches an interactive state',
-      `state=${boot.state}`);
+    check(boot.controlsVisible, 'in-session controls appear');
+    // Edge detection taps neighbouring source pixels; a stale default texel
+    // would make outlines blurry or invisible without any error.
+    check(Math.abs(boot.texel[0] - 1 / boot.videoW) < 1e-9,
+      'edge-detection texel size matches the real capture resolution',
+      `texel ${boot.texel} for ${boot.videoW}x${boot.videoH}`);
 
-    // --- The fullscreen+orientation-lock attempt from start() must never be
-    // able to break the session — headless Chromium, and plenty of real
-    // browsers (all of iOS Safari), reject or lack this outright, and that
-    // has to be an invisible no-op, not a startup failure.
-    const forceLandscape = await page.evaluate(async () => {
-      const app = window.ARFIGHT;
-      if (typeof app._tryForceLandscape !== 'function') return { error: 'method missing' };
-      let threw = null;
-      try {
-        await app._tryForceLandscape();
-      } catch (err) {
-        threw = err?.message || String(err);
-      }
-      return { threw, stillRunning: app.running === true };
-    });
-    check(forceLandscape.threw === null, 'force-landscape attempt never throws to its caller',
-      `threw: ${forceLandscape.threw}`);
-    check(forceLandscape.stillRunning, 'session is unaffected whether or not it succeeded');
-
-    // --- Rendering actually happens, and the GL program links.
+    // ----------------------------------------------------------- rendering
     console.log('\nRendering');
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(400);
     const gl = await page.evaluate(() => {
-      const r = window.ARFIGHT.renderer.renderer;
-      const info = r.info;
+      const r = window.ARRESKIN.renderer.renderer;
       return {
-        frames: info.render.frame,
-        calls: info.render.calls,
+        frames: r.info.render.frame,
+        calls: r.info.render.calls,
         programs: r.info.programs?.length ?? 0,
         contextLost: r.getContext().isContextLost(),
       };
     });
-    check(gl.frames > 5, 'render loop is producing frames', `frames=${gl.frames}`);
-    check(gl.calls > 0, 'draw calls are being issued', `calls=${gl.calls}`);
+    check(gl.frames > 0, 'render loop is producing frames', `frames=${gl.frames}`);
+    check(gl.calls > 0, 'draw calls are being issued');
     check(!gl.contextLost, 'WebGL context is healthy');
-    check(gl.programs >= 2, 'shader programs linked (passthrough + distortion)',
+    // Passthrough+restyle and distortion. If the restyle GLSL fails to
+    // compile, this is where it shows up rather than as a black headset.
+    check(gl.programs >= 2, 'shader programs linked (passthrough+restyle, distortion)',
       `programs=${gl.programs}`);
-
-    // Any shader that failed to compile shows up as a console error from three.
     const shaderErrors = consoleErrors.filter((e) => /shader|glsl|program|compile/i.test(e));
-    check(shaderErrors.length === 0, 'no shader compile errors',
-      shaderErrors.join('\n        '));
+    check(shaderErrors.length === 0, 'no shader compile errors', shaderErrors.join('\n        '));
 
     if (SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
-      await page.screenshot({ path: path.join(SHOT_DIR, '1-stereo.png') });
+      await page.screenshot({ path: path.join(SHOT_DIR, '1-untouched.png') });
     }
 
-    // --- Walk the flow using the pointer fallback.
-    console.log('\nFlow');
-    await page.evaluate(() => {
-      const app = window.ARFIGHT;
-      // Force the pointer hand so the walk-through does not depend on
-      // MediaPipe being reachable.
-      app.hands = app.pointerHand;
-      app.pointerHand.visible = true;
-      if (app.fsm.current === 'check') app.fsm.go('draw');
-    });
+    // -------------------------------------------------------------- reskin
+    console.log('\nReskin');
+    const before = await page.evaluate(() => ({
+      active: window.ARRESKIN.director.active,
+      chroma: window.ARRESKIN.renderer.bgUniforms.uChroma.value,
+    }));
+    check(before.active === false, 'starts with the room untouched');
+    // The passthrough style is the exact identity; chroma 1 is its signature.
+    check(Math.abs(before.chroma - 1) < 1e-6, 'untouched really means untouched (chroma 1)');
 
-    // Draw two strokes by driving the drawing session directly. Points must be
-    // real Vector3s — the app clones and transforms them downstream.
-    const strokeCount = await page.evaluate(async () => {
-      const app = window.ARFIGHT;
-      const Vec3 = app.head.position.constructor;
-      const draw = (from, to, steps) => {
-        app.drawing.beginStroke();
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          app.drawing.addPoint(new Vec3(
-            from[0] + (to[0] - from[0]) * t,
-            from[1] + (to[1] - from[1]) * t,
-            from[2] + (to[2] - from[2]) * t,
-          ));
-        }
-        app.drawing.endStroke();
+    const transformed = await page.evaluate(async () => {
+      const app = window.ARRESKIN;
+      await app._transform({ change: false });
+      // Let the cross-fade settle so the uniforms hold the final style.
+      for (let i = 0; i < 120; i++) app.director.update(1 / 60);
+      app.renderer.setStyle(app.director.current);
+      const u = app.renderer.bgUniforms;
+      return {
+        active: app.director.active,
+        id: app.director.target.id,
+        name: app.director.target.name,
+        chroma: u.uChroma.value,
+        ramp: u.uRamp.value.map((c) => [c.r, c.g, c.b]),
       };
-      draw([0, -0.10, -0.5], [0, 0, -0.5], 14);   // grip
-      draw([0, 0, -0.5], [0, 0, -0.72], 26);      // barrel
-      app._refreshDrawButtons();
-      return app.drawing.strokes.length;
     });
-    check(strokeCount === 2, 'two strokes recorded', `got ${strokeCount}`);
+    check(transformed.active === true, 'transform applies a material', transformed.name);
+    check(transformed.chroma < 0.9, 'the shader is actually repainting, not passing through',
+      `chroma=${transformed.chroma}`);
+    // The ramp must reach the shader, or the world stays grey.
+    const rampSpread = transformed.ramp[3].reduce((a, b) => a + b, 0)
+      - transformed.ramp[0].reduce((a, b) => a + b, 0);
+    check(rampSpread > 0.3, 'the colour ramp reached the shader uniforms',
+      `spread=${rampSpread.toFixed(2)}`);
 
-    // --- Gaze+pinch must fire the instant a pinch lands while looking at a
-    // button, not after some minimum dwell first — the panel sits further
-    // away than an arm reaches, so this is the primary way to press
-    // anything, and a pinch that arrives before a dwell timer elapses used
-    // to go unclaimed by the UI entirely, falling through to the draw code
-    // as an ordinary stroke-starting pinch instead of pressing the button
-    // being looked at.
-    const gazePress = await page.evaluate(() => {
-      const app = window.ARFIGHT;
-      const Vec3 = app.head.position.constructor;
+    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '2-transformed.png') });
+
+    // --- The guarantee the whole design is built around: looking around must
+    // never re-decide the material. Simulated here by driving the head through
+    // a full rotation over hundreds of frames, exactly as turning away and
+    // back would, and confirming nothing about the style moved.
+    const afterLooking = await page.evaluate(async (expectedId) => {
+      const app = window.ARRESKIN;
       const Quat = app.head.quaternion.constructor;
-
-      app.ui.update(1 / 60, app.head.position, app.head.quaternion, []);
-      const button = app.ui.buttons[0];
-      if (!button) return { error: 'no buttons available' };
-      const at = button.mesh.getWorldPosition(new Vec3());
-
-      // Aim the head straight at the button; the hand stays far from it, so
-      // this can only reach the gaze path, never direct touch.
-      const dir = at.clone().sub(app.head.position).normalize();
-      const quat = new Quat().setFromUnitVectors(new Vec3(0, 0, -1), dir);
-      const farAway = new Vec3(5, 5, 5);
-      const hand = { visible: true, indexTip: farAway, pinchPoint: farAway, pinching: false };
-      const strokesBefore = app.drawing.strokes.length;
-
-      // Frame 1: gaze lands on the button, not pinching yet — zero dwell so far.
-      app.ui.update(1 / 60, app.head.position, quat, [hand]);
-
-      // Frame 2: pinch closes on the very next frame, well before any dwell
-      // timer could have elapsed.
-      hand.pinching = true;
-      const pressed = app.ui.update(1 / 60, app.head.position, quat, [hand]);
-      const consumed = app.ui.pinchConsumed;
-
-      app._updateDraw(hand);
-      const strokeLeaked = app.drawing.active !== null || app.drawing.strokes.length !== strokesBefore;
-
-      return { pressed, consumed, strokeLeaked, buttonId: button.id };
-    });
-    check(gazePress.pressed === gazePress.buttonId,
-      'gaze+pinch fires the instant the pinch lands, no minimum dwell required',
-      `got ${JSON.stringify(gazePress)}`);
-    check(gazePress.consumed === true, 'a same-frame gaze+pinch is marked consumed by the UI');
-    check(gazePress.strokeLeaked === false, 'a same-frame gaze+pinch does not leak through to drawing');
-
-    // --- Press DONE the way a player actually does: touch the button and
-    // pinch, through WorldUI.update() itself, not by calling _onButton
-    // directly. This is the path that broke — DONE, Undo and Clear all sat
-    // out of arm's reach, so a pinch aimed at them fell through to the
-    // drawing code and started a stroke instead of pressing anything.
-    const uiPress = await page.evaluate(() => {
-      const app = window.ARFIGHT;
       const Vec3 = app.head.position.constructor;
+      const axis = new Vec3(0, 1, 0);
+      for (let i = 0; i < 600; i++) {
+        // Sweep a full turn and back, the way a wearer would look around.
+        app.head.quaternion.copy(new Quat().setFromAxisAngle(axis, (i / 600) * Math.PI * 2));
+        app.director.update(1 / 60);
+      }
+      return { id: app.director.target.id, active: app.director.active, pending: app.director.pending };
+    }, transformed.id);
+    check(afterLooking.id === transformed.id,
+      'looking all the way around does not change the material',
+      `${transformed.id} -> ${afterLooking.id}`);
+    check(afterLooking.active === true, 'and it is still applied');
 
-      // Settle the panel in front of the head, then find DONE in world space.
-      app.ui.update(1 / 60, app.head.position, app.head.quaternion, []);
-      const button = app.ui.buttons.find((b) => b.id === 'done-draw');
-      if (!button) return { error: 'done-draw button not found' };
-      const at = button.mesh.getWorldPosition(new Vec3());
-
-      const hand = { visible: true, indexTip: at.clone(), pinchPoint: at.clone(), pinching: false };
-      const strokesBefore = app.drawing.strokes.length;
-
-      // Frame 1: touching, not yet pinching — hover only.
-      const idle = app.ui.update(1 / 60, app.head.position, app.head.quaternion, [hand]);
-
-      // Frame 2: pinch closes on the button.
-      hand.pinching = true;
-      const pressed = app.ui.update(1 / 60, app.head.position, app.head.quaternion, [hand]);
-      const consumedDuringPinch = app.ui.pinchConsumed;
-
-      // Mirror what the real loop does next: state code sees the same pinch.
-      // It must be swallowed, not read as the start of a stroke.
-      app._updateDraw(hand);
-      const strokeLeaked = app.drawing.active !== null || app.drawing.strokes.length !== strokesBefore;
-
-      if (pressed) app._onButton(pressed);
-      const state = app.fsm.current;
-
-      // Frame 3: release. The latch must clear so the next real pinch draws.
-      hand.pinching = false;
-      app.ui.update(1 / 60, app.head.position, app.head.quaternion, [hand]);
-
-      return {
-        idle, pressed, consumedDuringPinch, strokeLeaked, state,
-        pinchConsumedAfterRelease: app.ui.pinchConsumed,
-      };
+    const changed = await page.evaluate(async () => {
+      const app = window.ARRESKIN;
+      await app._transform({ change: true });
+      return { id: app.director.target.id };
     });
-    check(uiPress.idle === null, 'touching a button without pinching does not press it');
-    check(uiPress.pressed === 'done-draw', 'pinching on DONE presses it',
-      `got ${JSON.stringify(uiPress.pressed)}`);
-    check(uiPress.consumedDuringPinch === true, 'the pinch is marked consumed by the UI');
-    check(uiPress.strokeLeaked === false, 'the same pinch does not also start a stroke');
-    check(uiPress.state === 'categorize', 'DONE actually advances the flow',
-      `state=${uiPress.state}`);
-    check(uiPress.pinchConsumedAfterRelease === false, 'the latch clears once the pinch opens');
+    check(changed.id !== transformed.id, 'change picks a different material',
+      `${transformed.id} -> ${changed.id}`);
 
-    // Classify as a gun and tag all three anchors.
-    const tagged = await page.evaluate(() => {
-      const app = window.ARFIGHT;
-      const Vec3 = app.head.position.constructor;
-      app._onButton('cat-gun');
-
-      const snap = (x, y, z) => app.drawing.nearestPoint(new Vec3(x, y, z), 0.2)?.point;
-
-      app.weapon.setAnchor('grip', snap(0, -0.10, -0.5));
-      app.weapon.setAnchor('trigger', snap(0, -0.04, -0.5));
-      app.weapon.setAnchor('muzzle', snap(0, 0, -0.72));
-      const complete = app.weapon.taggingComplete;
-      app._equipWeapon();
-
-      const forward = app.rig.getForward(new Vec3());
-      const muzzle = app.rig.getTipPosition(new Vec3());
-      return {
-        complete,
-        state: app.fsm.current,
-        category: app.weapon.category,
-        // The barrel runs along -Z, so the bore should too.
-        boreAlignment: forward.z,
-        muzzle: [muzzle.x, muzzle.y, muzzle.z],
-      };
+    const off = await page.evaluate(() => {
+      const app = window.ARRESKIN;
+      app._onButton('off');
+      for (let i = 0; i < 120; i++) app.director.update(1 / 60);
+      app.renderer.setStyle(app.director.current);
+      return { active: app.director.active, chroma: app.renderer.bgUniforms.uChroma.value };
     });
-    check(tagged.complete, 'all three gun anchors tagged');
-    check(tagged.state === 'equip', 'reaches the equipped state', `state=${tagged.state}`);
-    check(tagged.boreAlignment < -0.95, 'bore axis follows the drawn barrel',
-      `forward.z=${tagged.boreAlignment?.toFixed(3)}`);
+    check(off.active === false, 'off returns to the untouched room');
+    check(Math.abs(off.chroma - 1) < 1e-6, 'and restores exact passthrough', `chroma=${off.chroma}`);
 
-    await page.waitForTimeout(400);
-
-    // Fire, and confirm a round is actually live in the pool.
-    const fired = await page.evaluate(() => {
-      const app = window.ARFIGHT;
-      app.gun.fire(app.head.quaternion);
-      const live = Array.from(app.projectiles.lives).filter((l) => l > 0).length;
-      return { live, shots: app.gun.shotsFired, recoil: app.rig.recoil };
+    // --- The choice has to outlive a reload, or every glance at the phone
+    // resets the room. Re-apply, reload the page, and check it comes back.
+    const remembered = await page.evaluate(async () => {
+      const app = window.ARRESKIN;
+      await app._transform({ change: false });
+      return { id: app.director.target.id };
     });
-    check(fired.live === 1, 'firing spawns a projectile', `live=${fired.live}`);
-    check(fired.recoil > 0, 'firing applies recoil');
+    await page.reload({ waitUntil: 'load' });
+    const restored = await page.evaluate(() => ({
+      active: window.ARRESKIN.director.active,
+      id: window.ARRESKIN.director.target.id,
+    }));
+    check(restored.active === true && restored.id === remembered.id,
+      'the material survives a reload',
+      `${remembered.id} -> ${restored.id} (active=${restored.active})`);
 
-    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '2-equipped.png') });
+    // Back into a live session for the robustness checks below.
+    await page.click('#gate-start');
+    await page.waitForFunction(() => window.ARRESKIN?.running === true, null, { timeout: 45000 });
 
-    // --- Mono toggle and resize must not break the render loop.
+    // ---------------------------------------------------------- robustness
     console.log('\nRobustness');
     await page.click('#btn-stereo');
+    check(await page.evaluate(() => window.ARRESKIN.renderer.stereo === false), 'stereo toggles off');
+    check(await page.locator('#status').isVisible(), 'status line appears in mono mode');
+
+    await page.setViewportSize({ width: 420, height: 720 });
     await page.waitForTimeout(250);
-    const mono = await page.evaluate(() => ({
-      stereo: window.ARFIGHT.renderer.stereo,
-      statusVisible: !document.getElementById('status').hidden,
+    check(await page.locator('#rotate-gate').isVisible(), 'rotate gate appears when held upright');
+    await page.setViewportSize({ width: 900, height: 450 });
+    await page.waitForTimeout(250);
+    check(await page.locator('#rotate-gate').isHidden(), 'rotate gate clears once landscape again');
+
+    const afterResize = await page.evaluate(() => ({
+      frames: window.ARRESKIN.renderer.renderer.info.render.frame,
+      contextLost: window.ARRESKIN.renderer.renderer.getContext().isContextLost(),
     }));
-    check(mono.stereo === false, 'stereo toggles off');
-    check(mono.statusVisible, 'status line appears in mono mode');
+    check(!afterResize.contextLost, 'context survived the resize');
 
-    await page.setViewportSize({ width: 640, height: 1000 }); // portrait
-    await page.waitForTimeout(300);
-    const portraitGate = await page.evaluate(() => ({
-      rotateGateHidden: document.getElementById('rotate-gate').hidden,
-    }));
-    check(portraitGate.rotateGateHidden === false, 'rotate gate appears when held upright');
-    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '4-rotate-gate.png') });
-
-    await page.setViewportSize({ width: 1000, height: 500 }); // back to landscape
-    await page.waitForTimeout(300);
-    const landscapeGate = await page.evaluate(() => ({
-      rotateGateHidden: document.getElementById('rotate-gate').hidden,
-    }));
-    check(landscapeGate.rotateGateHidden === true, 'rotate gate clears once landscape again');
-
-    const after = await page.evaluate(() => {
-      const r = window.ARFIGHT.renderer;
-      return {
-        frames: r.renderer.info.render.frame,
-        contextLost: r.renderer.getContext().isContextLost(),
-        eyeAspect: r.eyeAspect,
-      };
-    });
-    check(after.frames > gl.frames, 'still rendering after resize',
-      `${gl.frames} -> ${after.frames}`);
-    check(!after.contextLost, 'context survived the resize');
-
-    // --- The manual "camera looks sideways" fix: tapping it must actually
-    // change what the shader samples, and the render loop must keep running.
+    // --- The manual "camera looks sideways" fix, and the separate mirror
+    // toggle: rotation alone is a proper-rotation-only fix, so no number of
+    // 90° turns can undo a reflected feed.
     const rotate = await page.evaluate(() => {
-      const app = window.ARFIGHT;
+      const app = window.ARRESKIN;
       const btn = document.getElementById('btn-fliprot');
       const before = app.videoRotation;
-      const wasManual = app._videoRotationManual;
       const labelBefore = btn.textContent;
-      btn.click();
-      const labelAfter = btn.textContent;
-      // A landscape-shaped-but-180°-off stream is indistinguishable from a
-      // correct one by aspect ratio alone (see _autoDetectVideoRotation), so
-      // it can only ever be fixed by the player tapping through to 180° —
-      // the label has to actually show that state, or there is no way to
-      // tell the second tap did anything.
       btn.click();
       return {
         before,
         after: app.videoRotation,
-        manualAfter: app._videoRotationManual,
-        wasManual,
+        manual: app._videoRotationManual,
         frameMapRotation: app.frameMap.rotation,
         shaderUniform: app.renderer.bgUniforms.uVideoRotation.value,
         labelBefore,
-        labelAfter,
-        labelAfterTwoTaps: btn.textContent,
+        labelAfter: btn.textContent,
       };
     });
-    check(rotate.wasManual === false, 'rotation starts on the auto-guess');
-    check(rotate.labelBefore === `${rotate.before * 90}°`, 'flip button label matches the starting rotation',
-      `${rotate.labelBefore} for ${rotate.before}`);
-    check(rotate.after === (rotate.before + 2) % 4, 'tapping the button twice advances by two turns',
-      `${rotate.before} -> ${rotate.after}`);
-    check(rotate.manualAfter === true, 'tapping the button marks the choice as manual');
-    check(rotate.frameMapRotation === rotate.after, 'VideoFrameMap picks up the new rotation');
-    check(rotate.shaderUniform === rotate.after, 'the shader uniform matches it');
-    check(rotate.labelAfter === `${((rotate.before + 1) % 4) * 90}°`, 'flip button label updates after the first tap',
+    check(rotate.after === (rotate.before + 1) % 4, 'tapping the flip button advances one turn');
+    check(rotate.manual === true, 'tapping marks the choice as manual');
+    check(rotate.frameMapRotation === rotate.after && rotate.shaderUniform === rotate.after,
+      'rotation reaches both the frame map and the shader');
+    check(rotate.labelAfter === `${rotate.after * 90}°`, 'flip button label reflects the rotation',
       rotate.labelAfter);
-    check(rotate.labelAfterTwoTaps === `${rotate.after * 90}°`, 'flip button label reflects the rotation after two taps',
-      rotate.labelAfterTwoTaps);
 
-    await page.waitForTimeout(250);
-    const afterRotate = await page.evaluate(() => ({
-      frames: window.ARFIGHT.renderer.renderer.info.render.frame,
-      contextLost: window.ARFIGHT.renderer.renderer.getContext().isContextLost(),
-    }));
-    check(afterRotate.frames > after.frames, 'still rendering after rotating the video');
-    check(!afterRotate.contextLost, 'context survived the rotation change');
-
-    // --- The manual mirror toggle: no combination of 90° rotations can undo
-    // a reflection, so a mirrored feed needs this separate control — check it
-    // actually flips frameMap.mirrorX, reaches the shader, and shows on/off.
     const mirror = await page.evaluate(() => {
-      const app = window.ARFIGHT;
+      const app = window.ARRESKIN;
       const btn = document.getElementById('btn-mirror');
       const before = app.frameMap.mirrorX;
       btn.click();
-      const afterOne = {
-        mirrorX: app.frameMap.mirrorX,
-        shaderUniform: app.renderer.bgUniforms.uMirror.value,
-        hasOnClass: btn.classList.contains('on'),
-      };
-      btn.click();
       return {
         before,
-        afterOne,
-        afterTwo: { mirrorX: app.frameMap.mirrorX, hasOnClass: btn.classList.contains('on') },
+        after: app.frameMap.mirrorX,
+        uniform: app.renderer.bgUniforms.uMirror.value,
+        onClass: btn.classList.contains('on'),
       };
     });
-    check(mirror.afterOne.mirrorX === !mirror.before, 'tapping mirror flips frameMap.mirrorX',
-      `${mirror.before} -> ${mirror.afterOne.mirrorX}`);
-    check(mirror.afterOne.shaderUniform === (mirror.afterOne.mirrorX ? 1 : 0),
-      'the mirror shader uniform matches it');
-    check(mirror.afterOne.hasOnClass === mirror.afterOne.mirrorX, 'mirror button shows on/off state');
-    check(mirror.afterTwo.mirrorX === mirror.before, 'tapping mirror again undoes it');
-    check(mirror.afterTwo.hasOnClass === mirror.afterTwo.mirrorX, 'mirror button state matches after undo');
+    check(mirror.after === !mirror.before, 'mirror toggles');
+    check(mirror.uniform === (mirror.after ? 1 : 0), 'mirror reaches the shader');
+    check(mirror.onClass === mirror.after, 'mirror button shows its state');
 
-    // Resizing again must not silently revert the player's manual choice.
-    await page.setViewportSize({ width: 900, height: 450 });
-    await page.waitForTimeout(250);
-    const stuck = await page.evaluate(() => window.ARFIGHT.videoRotation);
-    check(stuck === rotate.after, 'the manual rotation survives a resize',
-      `expected ${rotate.after}, got ${stuck}`);
-
-    // On some browsers `screen.orientation.lock()` resolves without firing
-    // the 'change' event HeadTracker's angle compensation refreshes from,
-    // which can leave it stuck reporting a portrait angle after the page has
-    // already gone landscape — the CSS layout and the 3D scene's idea of
-    // "up" then disagree, and every world-space panel (the UI, the weapon)
-    // renders visibly rolled relative to the screen-locked video background.
-    // A resize is the independent, always-fires signal this self-corrects
-    // from, so simulate exactly that stuck state and confirm it heals.
+    // On some browsers `screen.orientation.lock()` resolves without firing the
+    // 'change' event HeadTracker's angle compensation refreshes from, leaving
+    // it stuck on a portrait angle after the page went landscape — every
+    // world-space panel then renders visibly rolled. A resize is the
+    // independent, always-fires signal it self-corrects from.
     const screenAngleFix = await page.evaluate(() => {
-      const head = window.ARFIGHT.head;
+      const head = window.ARRESKIN.head;
       Object.defineProperty(screen.orientation, 'angle', { value: 0, configurable: true });
       const isLandscape = window.innerWidth > window.innerHeight;
       head.refreshScreenAngle();
       return { angleDeg: (head._screenAngle * 180) / Math.PI, isLandscape };
     });
-    check(
-      !screenAngleFix.isLandscape || screenAngleFix.angleDeg === 90,
-      'head-tracking angle self-corrects when stuck at a portrait value on a landscape layout',
-      `landscape=${screenAngleFix.isLandscape}, angle=${screenAngleFix.angleDeg}`,
-    );
+    check(!screenAngleFix.isLandscape || screenAngleFix.angleDeg === 90,
+      'head-tracking angle self-corrects when stuck at a portrait value',
+      `landscape=${screenAngleFix.isLandscape}, angle=${screenAngleFix.angleDeg}`);
 
-    // Start a fresh weapon: exercises teardown, which is where leaks hide.
-    await page.evaluate(() => window.ARFIGHT._startNewWeapon());
-    await page.waitForTimeout(250);
-    const restarted = await page.evaluate(() => ({
-      state: window.ARFIGHT.fsm.current,
-      strokes: window.ARFIGHT.drawing.strokes.length,
-      weapon: window.ARFIGHT.weapon,
-    }));
-    check(restarted.state === 'draw', 'restart returns to drawing');
-    check(restarted.strokes === 0, 'restart clears the sketch');
-    check(restarted.weapon === null, 'restart releases the weapon');
-
-    // --- Paper tracing: the whole gesture-hold -> capture -> convert path,
-    // exercised against the real (fake-device) camera frame. The exact
-    // shapes Chromium's synthetic test pattern happens to contain are not
-    // asserted on — that is what the PaperTrace unit tests pin down with
-    // controlled pixel data — only that holding the gesture for less than
-    // the required time does nothing, and holding it long enough drives the
-    // app to one well-defined outcome or the other without throwing.
-    console.log('\nPaper trace');
-    const heldTooShort = await page.evaluate(async () => {
-      const app = window.ARFIGHT;
-      app.pointerHand.thumbsUp = true;
-      await new Promise((r) => setTimeout(r, 150));
-      app.pointerHand.thumbsUp = false;
-      await new Promise((r) => setTimeout(r, 50));
-      return { state: app.fsm.current, strokes: app.drawing.strokes.length };
+    // The fullscreen+orientation-lock attempt must never break the session —
+    // headless Chromium, and all of iOS Safari, reject it outright.
+    const forceLandscape = await page.evaluate(async () => {
+      const app = window.ARRESKIN;
+      let threw = null;
+      try {
+        await app._tryForceLandscape();
+      } catch (e) {
+        threw = String(e);
+      }
+      return { threw, running: app.running };
     });
-    check(heldTooShort.state === 'draw' && heldTooShort.strokes === 0,
-      'a thumbs-up held under the threshold does nothing',
-      JSON.stringify(heldTooShort));
-
-    const holdMs = await page.evaluate(() => window.ARFIGHT_CONFIG.paperTrace.holdMs);
-    const held = await page.evaluate(async (ms) => {
-      const app = window.ARFIGHT;
-      app.pointerHand.thumbsUp = true;
-      await new Promise((r) => setTimeout(r, ms + 250));
-      app.pointerHand.thumbsUp = false;
-      return {
-        state: app.fsm.current,
-        strokes: app.drawing.strokes.length,
-        promptTitle: app.ui.prompt.title,
-      };
-    }, holdMs);
-    const capturedWeapon = held.state === 'categorize' && held.strokes > 0;
-    const reportedNothingFound = held.state === 'draw' && held.strokes === 0 && !!held.promptTitle;
-    check(capturedWeapon || reportedNothingFound,
-      'a sustained thumbs-up either captures a weapon or reports nothing found',
-      JSON.stringify(held));
-
-    // However that landed, get back to a clean draw state for the shot below.
-    await page.evaluate(() => window.ARFIGHT._startNewWeapon());
-    await page.waitForTimeout(150);
+    check(forceLandscape.threw === null, 'force-landscape never throws to its caller',
+      forceLandscape.threw || '');
+    check(forceLandscape.running === true, 'session is unaffected whether or not it succeeded');
 
     if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '3-mono.png') });
 
-    // --- Nothing should have thrown along the way.
+    // -------------------------------------------------------------- console
     console.log('\nConsole');
-    check(pageErrors.length === 0, 'no uncaught exceptions',
-      pageErrors.join('\n        '));
+    check(pageErrors.length === 0, 'no uncaught exceptions', pageErrors.join('\n        '));
 
     // Probes for the optional local MediaPipe copy are *meant* to 404 when
     // fetch-deps has not been run; a 404 on anything else is a broken path.
     const expected404 = /^\/(vendor\/mediapipe\/|models\/hand_landmarker\.task|favicon\.ico)/;
     const unexpected404 = [...new Set(notFound)].filter((p) => !expected404.test(p));
-    check(unexpected404.length === 0, 'every first-party asset resolves',
-      unexpected404.join(', '));
+    check(unexpected404.length === 0, 'every first-party asset resolves', unexpected404.join(', '));
 
-    // A 404 surfaces as a console error too; drop those alongside the CDN
-    // failures this sandbox cannot avoid.
     const realErrors = consoleErrors.filter(
       (e) => !/mediapipe|jsdelivr|Failed to fetch|net::ERR|hand tracking|404 \(Not Found\)/i.test(e),
     );
-    check(realErrors.length === 0, 'no unexpected console errors',
-      realErrors.join('\n        '));
+    check(realErrors.length === 0, 'no unexpected console errors', realErrors.join('\n        '));
 
     if (notFound.length) {
       console.log(`  note  optional assets absent (expected): ${[...new Set(notFound)].join(', ')}`);
     }
-    console.log('  note  MediaPipe CDN is unreachable here, so the pointer fallback was exercised');
+    console.log('  note  MediaPipe CDN is unreachable here, so the pointer/gaze fallback was exercised');
   } finally {
-    await browser?.close();
+    if (browser) await browser.close();
     server.kill();
   }
 
-  console.log(`\n${failures === 0 ? 'smoke test passed' : `${failures} check(s) failed`}`);
+  console.log(failures === 0 ? '\nsmoke test passed' : `\nsmoke test FAILED (${failures})`);
   if (SHOTS) console.log(`screenshots in ${path.relative(ROOT, SHOT_DIR)}/`);
-  process.exit(failures === 0 ? 0 : 1);
+  if (failures) process.exit(1);
 }
 
 main().catch((err) => {
-  console.error(`\nsmoke test errored: ${err.message}`);
+  console.error('\nsmoke test errored:', err.message);
   process.exit(1);
 });

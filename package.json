@@ -1,14 +1,15 @@
 {
-  "name": "ar-fight",
+  "name": "remade",
   "version": "0.1.0",
   "private": true,
-  "description": "Mobile AR: draw a weapon mid-air, classify it as a gun or melee weapon, tag its muzzle/trigger/grip or grip/strike edge, then wield it. Stereo passthrough for a phone-in-headset, hand tracking from the rear camera.",
+  "description": "Mobile AR that repaints the real world as a different material \u2014 carved ice, cast iron, jade \u2014 while keeping every object exactly where it is, so you can still reach out and touch it. Stereo passthrough for a phone-in-headset.",
   "type": "module",
   "scripts": {
     "start": "node tools/serve.js",
     "serve": "node tools/serve.js",
     "serve:http": "node tools/serve.js --http",
     "fetch-deps": "node tools/fetch-deps.js",
+    "relay": "node tools/style-relay.js",
     "check": "node --experimental-vm-modules --no-warnings tools/check.js",
     "test": "node --import ./tools/three-loader.js tools/test.js",
     "smoke": "node tools/smoke.js",

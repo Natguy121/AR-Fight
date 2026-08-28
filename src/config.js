@@ -1,8 +1,8 @@
 /**
- * Central tuning surface for AR-Fight.
+ * Central tuning surface for Remade.
  *
  * Everything a phone/headset combination might need to be adjusted for lives
- * here. Values are also exposed at runtime as `window.ARFIGHT_CONFIG`, so they
+ * here. Values are also exposed at runtime as `window.REMADE_CONFIG`, so they
  * can be poked from a remote debugger while wearing the headset.
  */
 
@@ -18,9 +18,9 @@ export const config = {
      * not expose this, so it is an estimate; ~59deg matches the main rear
      * camera of most phones (a ~26mm equivalent lens).
      *
-     * Getting this wrong does NOT break on-screen alignment — strokes are
-     * reconstructed so they reproject onto the pixels your hand occupied — it
-     * only scales how far away things feel. Calibration refines it.
+     * Only used by the hand depth solver, and only to scale how far away a
+     * hand is judged to be — the repaint itself never consults it, since it
+     * works on camera pixels directly rather than on reconstructed geometry.
      */
     verticalFovDeg: 59,
   },
@@ -130,8 +130,9 @@ export const config = {
     minDepth: 0.15,
     maxDepth: 1.2,
     /**
-     * Scalar applied to the depth estimate. Calibration overwrites this to
-     * account for the user's actual hand size and the camera FOV estimate.
+     * Scalar applied to the depth estimate, to account for hand size and the
+     * camera FOV estimate above. Only affects how far away a pinch is judged
+     * to be, which in turn only affects reaching out to touch a UI button.
      */
     depthScale: 1.0,
   },
@@ -141,163 +142,33 @@ export const config = {
     /** Pinch closes below `pinchOn`, opens above `pinchOff` (hysteresis). */
     pinchOn: 0.38,
     pinchOff: 0.55,
-    /** Index PIP joint angle (degrees) for the trigger pull, with hysteresis. */
-    triggerPullDeg: 118,
-    triggerReleaseDeg: 138,
     /** A gesture must hold this long (ms) before it counts, to reject noise. */
     debounceMs: 60,
   },
 
-  /** Mid-air drawing. */
-  draw: {
-    /** Minimum travel between recorded stroke samples, in metres. */
-    minSampleDistance: 0.006,
-    /** Tube radius of a stroke, in metres. */
-    strokeRadius: 0.008,
-    /** Radial segments of the stroke tube. Low: these get rebuilt often. */
-    radialSegments: 6,
-    /** Hard cap on samples per stroke, to bound geometry cost. */
-    maxSamplesPerStroke: 400,
-    maxStrokes: 40,
-    /** Rebuild the live stroke's mesh at most every N frames. */
-    rebuildEveryNFrames: 2,
-    /** Colour cycle for successive strokes. */
-    palette: [0x5ac8fa, 0xffd166, 0xff6b6b, 0x8bf5a0, 0xc792ea, 0xffa94d],
-  },
-
-  /**
-   * Paper tracing: draw the weapon outline with a pen instead of mid-air.
-   * Hold the drawing up to the camera and give a thumbs up; each dark shape
-   * found on it becomes a stroke, same as if it had been pinch-drawn.
-   */
-  paperTrace: {
-    /** How long a steady thumbs-up must hold before it fires, in ms — long
-     * enough that it reads as deliberate (this ends the draw step outright,
-     * unlike the fast gesture debounces used for pinch/trigger). */
-    holdMs: 550,
-    /** After a capture attempt (successful or not), ignore thumbs-up for
-     * this long — otherwise the same held gesture immediately re-fires. */
-    cooldownMs: 1200,
-    /** Distance in front of the viewer the drawing is assumed to be held at,
-     * metres. Only affects the drawing's initial apparent size (exactly like
-     * getting the camera FOV estimate wrong does, per `camera` above) — hold
-     * the paper closer or farther to make the traced shape bigger or
-     * smaller, the same intuitive control mid-air drawing already has. */
-    depth: 0.4,
-    /** Longest edge the captured frame is downscaled to before processing.
-     * Contour tracing is O(pixels); this is plenty of resolution for a
-     * pen outline while keeping it fast on a phone. */
-    captureMaxWidth: 360,
-    /** At most this many separate ink shapes become strokes, largest first. */
-    maxContours: 6,
-    /** Reject a shape smaller than this fraction of the frame, as noise. */
-    minAreaFraction: 0.002,
-    /** Reject a shape covering more than this fraction of the frame — most
-     * likely the whole page (or a shadow) got thresholded as one blob. */
-    maxAreaFraction: 0.9,
-    /** Douglas-Peucker simplification tolerance, in source pixels. */
-    simplifyEpsilonPx: 2,
-    /** Minimum grey-value standard deviation across the frame. Below this
-     * there is no real edge to threshold — blank paper, a lens cap, or bad
-     * light — so bail out honestly rather than reporting noise as a shape. */
-    minContrast: 12,
-  },
-
-  /** Anchor tagging. */
-  tagging: {
-    /** Fingertip must be within this radius (m) of a stroke sample to snap. */
-    snapRadius: 0.09,
-    /** Radius (m) around the muzzle used for the PCA barrel-axis fit. */
-    barrelAxisRadius: 0.12,
-    markerRadius: 0.016,
-    colors: {
-      muzzle: 0xff8c42,
-      trigger: 0xff4d6d,
-      grip: 0x4d96ff,
-      strike: 0xffe74c,
-    },
-  },
-
-  /** Holding and using the finished weapon. */
-  weapon: {
-    /** Pitch (deg) applied to the grip so the weapon sits naturally in-hand. */
-    gripPitchOffsetDeg: -18,
-    /** Roll (deg) about the forward axis. */
-    gripRollOffsetDeg: 0,
-    /** Smoothing factor per frame for the held weapon pose (0..1, higher = snappier). */
-    poseLerp: 0.45,
-  },
-
-  gun: {
-    projectileSpeed: 22,
-    projectileRadius: 0.02,
-    projectileLifetime: 2.5,
-    maxProjectiles: 64,
-    fireIntervalMs: 180,
-    /** Recoil kick in metres along -forward, and its recovery rate. */
-    recoilDistance: 0.045,
-    recoilRecovery: 8,
-    muzzleFlashMs: 60,
-  },
-
-  melee: {
-    /** Strike point must exceed this speed (m/s) to register a hit. */
-    minSwingSpeed: 1.4,
-    /** Hit radius around the strike point, in metres. */
-    hitRadius: 0.14,
-    /** Cooldown between melee hits on the same target, in ms. */
-    hitCooldownMs: 350,
-    trailSegments: 24,
-    trailLifetimeMs: 240,
+  /** Repainting the world as a different material. */
+  reskin: {
     /**
-     * Throwing a melee weapon: releasing the pinch while the strike point is
-     * moving at least this fast (m/s) launches it as a projectile instead of
-     * just ending the swing. This is the *only* way a melee weapon can land
-     * a hit in versus mode — there is no shared physical space to swing into
-     * range of a remote opponent in.
+     * Seconds to cross-fade between two materials.
+     *
+     * Long enough to read as a transformation rather than a cut, short enough
+     * not to feel like waiting. Only ever runs on a deliberate change — see
+     * `StyleDirector`, which exists to guarantee nothing else can trigger one.
      */
-    throwSpeed: 2.2,
-    throwProjectileSpeed: 14,
-    throwDamage: 34,
-    /** Cooldown between throws, ms — otherwise a fast flick-flick-flick spams them. */
-    throwCooldownMs: 600,
-  },
-
-  /** Remote 1v1: draw your own weapon, then fight whoever you connect to. */
-  versus: {
-    maxHealth: 100,
-    gunDamage: 12,
-    /** Distance in front of the local player the opponent avatar is fixed
-     * at, metres — see `OpponentAvatar.place`. There is no shared physical
-     * space between two remote rooms to place them "truly" at. */
-    opponentDistance: 2.2,
-    /** Vertical offset from the local player's own head height. */
-    opponentHeightOffset: -0.05,
-    /** Radius of the opponent's hit-test sphere, metres — generous, since
-     * their avatar is a rough stand-in for a whole person. */
-    hitRadius: 0.32,
-    /** How often outgoing pose updates are sent, per second. Gameplay only
-     * needs to look responsive, not be pixel-accurate, so this is well below
-     * render rate to keep the data channel light. */
-    poseSendHz: 15,
-    /** A weapon sketch can have many stroke samples; a receive-only visual
-     * doesn't need draw-time density, so each stroke is thinned to at most
-     * this many points before it goes over the wire (see `WeaponSync`). */
-    maxSyncPointsPerStroke: 60,
-  },
-
-  /** Practice targets. */
-  targets: {
-    count: 6,
-    /** Ring radius (m) and vertical spread around the player. */
-    ringRadius: 3.2,
-    ringRadiusJitter: 1.0,
-    minHeight: -0.4,
-    maxHeight: 1.1,
-    radius: 0.22,
-    respawnDelayMs: 1400,
-    /** Targets drift gently so they are not static. */
-    driftSpeed: 0.25,
+    fadeSeconds: 0.7,
+    /**
+     * Remember the current material across reloads, so a room you have
+     * already transformed looks the way you left it when you come back.
+     * Turn off to start from untouched passthrough every time.
+     */
+    persist: true,
+    /**
+     * Longest edge, in pixels, of the frame sent to Claude when it is the one
+     * choosing. Small on purpose: this is a material judgement, which needs
+     * the room's overall colour and clutter rather than its fine detail, and
+     * every pixel is latency the wearer stands and waits through.
+     */
+    frameMaxWidth: 512,
   },
 
   /** World-space UI. */
@@ -324,10 +195,6 @@ export const config = {
   },
 
   debug: {
-    /** Draw the 21 hand landmarks as points. */
-    showHandSkeleton: true,
-    /** Show the reference floor grid. */
-    showGrid: true,
     /** Log state transitions to the console. */
     logStates: true,
     /**
@@ -352,7 +219,7 @@ if (typeof window !== 'undefined' && typeof location !== 'undefined') {
 }
 
 if (typeof window !== 'undefined') {
-  window.ARFIGHT_CONFIG = config;
+  window.REMADE_CONFIG = config;
 }
 
 export default config;

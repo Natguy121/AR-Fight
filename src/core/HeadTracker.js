@@ -84,7 +84,7 @@ class RotationSmoother {
  *
  * The head stays at the origin — there is no positional tracking, which is
  * both what a Cardboard-class headset offers and all this app needs, since the
- * weapon lives in your hand and targets orbit around you.
+ * world being looked at is the real one, seen through the camera.
  *
  * Falls back to pointer-drag look on anything without motion sensors, so the
  * whole app is still exercisable on a desktop browser.
@@ -186,7 +186,7 @@ export class HeadTracker {
     // device's *natural* orientation, not however the page currently lays
     // out — this angle is what re-references them to the page. It has to
     // agree with the page's own CSS shape or every 3D object (world-space
-    // UI, the weapon) comes out rolled relative to the screen-locked video
+    // UI) comes out rolled relative to the screen-locked video
     // background, which does not go through this compensation at all and so
     // stays put — exactly the mismatch that makes a panel look tilted.
     //

@@ -4,10 +4,10 @@ import config from '../config.js';
 /**
  * A synthetic hand driven by touch or mouse.
  *
- * Deliberately duck-types `HandPose`, so every downstream system — drawing,
- * tagging, firing — works unchanged. It exists for two reasons: the app stays
- * fully usable on a device where MediaPipe cannot load, and the whole flow can
- * be exercised on a desktop browser without a camera in front of your hands.
+ * Deliberately duck-types `HandPose`, so the world-space UI works unchanged.
+ * It exists for two reasons: the app stays fully usable on a device where
+ * MediaPipe cannot load, and the whole flow can be exercised on a desktop
+ * browser without a camera in front of your hands.
  *
  * Drag to move the cursor, and it "pinches" for as long as you hold. Depth is
  * fixed at a comfortable arm's length, nudged with two-finger drag or wheel.
@@ -37,11 +37,7 @@ export class PointerHand {
     this.velocity = new THREE.Vector3();
 
     this.pinching = false;
-    this.triggerPulled = false;
-    this.pointing = true;
-    this.thumbsUp = false;
     this.pinchRatio = 1;
-    this.indexCurlDeg = 180;
     this.missingFrames = 0;
 
     /** Cursor position in NDC. */
@@ -100,18 +96,6 @@ export class PointerHand {
       },
       { passive: true },
     );
-
-    // Space bar doubles as the trigger, so guns are testable without a hand.
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space') { this.triggerPulled = true; e.preventDefault(); }
-      // 'T' doubles as thumbs-up, so paper-capture is testable without a
-      // hand — same reasoning as the space-bar trigger above.
-      if (e.code === 'KeyT') { this.thumbsUp = true; e.preventDefault(); }
-    });
-    window.addEventListener('keyup', (e) => {
-      if (e.code === 'Space') this.triggerPulled = false;
-      if (e.code === 'KeyT') this.thumbsUp = false;
-    });
   }
 
   _setFromEvent(e) {
@@ -142,8 +126,8 @@ export class PointerHand {
     this.pinchPoint.copy(_view).applyQuaternion(headQuat).add(headPos);
     this.indexTip.copy(this.pinchPoint);
 
-    // A plausible little hand frame so the weapon has something to mount on:
-    // grip slightly behind the cursor, pointing away from the viewer.
+    // A plausible little hand frame, so anything reading an orientation off a
+    // hand gets something coherent rather than an identity quaternion.
     this.forward.set(0, 0, -1).applyQuaternion(headQuat);
     this.up.set(0, 1, 0).applyQuaternion(headQuat);
     this.right.crossVectors(this.forward, this.up).normalize();

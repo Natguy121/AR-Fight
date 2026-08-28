@@ -12,7 +12,7 @@ import { HandPose } from './HandPose.js';
 export class HandSet {
   constructor() {
     this.hands = Array.from({ length: config.hands.numHands }, () => new HandPose());
-    /** The hand currently driving drawing / holding the weapon. */
+    /** The hand currently driving interaction. */
     this.primary = null;
     this._primaryIndex = -1;
   }

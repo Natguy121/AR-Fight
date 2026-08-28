@@ -17,7 +17,7 @@ import { angleAt, clamp } from '../util/math3d.js';
  * best map one onto the other is a small weak-perspective problem with a
  * closed form. Rotation absorbs the tilt, so the scale left over is honest
  * distance — and we get a full 3D hand orientation as a by-product, which is
- * what the weapon grip needs anyway.
+ * a useful by-product for anything that needs a hand frame.
  *
  * Each landmark is then placed along the ray through the pixel it actually
  * occupied, at its own depth. So the hand always reprojects exactly where you
@@ -64,12 +64,6 @@ export class HandPose {
     // Gesture state.
     this.pinchRatio = 1;
     this.pinching = false;
-    this.indexCurlDeg = 180;
-    this.triggerPulled = false;
-    this.pointing = false;
-    /** Fist with the thumb stuck out: a deliberate "confirm" shape, distinct
-     * from pinch/point, used to capture a paper drawing without a button. */
-    this.thumbsUp = false;
 
     // Velocity of the pinch point, world space, m/s.
     this.velocity = new THREE.Vector3();
@@ -82,8 +76,6 @@ export class HandPose {
 
     this._initFilters();
     this._pinchHold = 0;
-    this._triggerHold = 0;
-    this._thumbsUpHold = 0;
   }
 
   _initFilters() {
@@ -104,11 +96,7 @@ export class HandPose {
     this.visible = false;
     this._hasPrev = false;
     this._pinchHold = 0;
-    this._triggerHold = 0;
-    this._thumbsUpHold = 0;
     this.pinching = false;
-    this.triggerPulled = false;
-    this.thumbsUp = false;
     for (let i = 0; i < 21; i++) {
       this._uFilters[i].reset();
       this._vFilters[i].reset();
@@ -340,7 +328,7 @@ export class HandPose {
     return estimates.length % 2 ? estimates[mid] : (estimates[mid - 1] + estimates[mid]) * 0.5;
   }
 
-  /** Build the grip frame the weapon will be mounted on. */
+  /** Build the hand frame: palm centre, plus an orthonormal basis. */
   _updateFrame() {
     const lm = this.landmarks;
 
@@ -388,7 +376,7 @@ export class HandPose {
    * which makes thresholds behave the same at any distance or angle.
    */
   _updateGestures(world, dt) {
-    const { pinchOn, pinchOff, triggerPullDeg, triggerReleaseDeg, debounceMs } = config.gestures;
+    const { pinchOn, pinchOff, debounceMs } = config.gestures;
     const dtMs = dt * 1000;
 
     // Pinch: thumb tip to index tip, normalised by the hand's own size.
@@ -400,63 +388,6 @@ export class HandPose {
     if (this._pinchHold >= debounceMs) {
       this.pinching = wantPinch;
       this._pinchHold = 0;
-    }
-
-    // Trigger: the index finger's own bend, which is literally the gesture.
-    this.indexCurlDeg = angleAt(
-      _vecFrom(world[LM.INDEX_MCP], _tmpA),
-      _vecFrom(world[LM.INDEX_PIP], _tmpB),
-      _vecFrom(world[LM.INDEX_TIP], _tmpC),
-    );
-    const wantTrigger = this.triggerPulled
-      ? this.indexCurlDeg < triggerReleaseDeg
-      : this.indexCurlDeg < triggerPullDeg;
-    this._triggerHold = wantTrigger === this.triggerPulled ? 0 : this._triggerHold + dtMs;
-    if (this._triggerHold >= debounceMs) {
-      this.triggerPulled = wantTrigger;
-      this._triggerHold = 0;
-    }
-
-    // Pointing: index straight while the middle finger is folded away.
-    const middleCurl = angleAt(
-      _vecFrom(world[LM.MIDDLE_MCP], _tmpA),
-      _vecFrom(world[LM.MIDDLE_PIP], _tmpB),
-      _vecFrom(world[LM.MIDDLE_TIP], _tmpC),
-    );
-    this.pointing = this.indexCurlDeg > 150 && middleCurl < 130;
-
-    // Thumbs up: a fist (four fingers curled) with the thumb straight and
-    // sticking out well clear of the curled fingertips. Not direction-tested
-    // against gravity/up — "curled fist, thumb out" is already distinctive
-    // enough from pinch/point/open-hand, and skipping that check means it
-    // reads the same whichever way the hand happens to be turned while
-    // holding up a paper drawing.
-    const ringCurl = angleAt(
-      _vecFrom(world[LM.RING_MCP], _tmpA),
-      _vecFrom(world[LM.RING_PIP], _tmpB),
-      _vecFrom(world[LM.RING_TIP], _tmpC),
-    );
-    const pinkyCurl = angleAt(
-      _vecFrom(world[LM.PINKY_MCP], _tmpA),
-      _vecFrom(world[LM.PINKY_PIP], _tmpB),
-      _vecFrom(world[LM.PINKY_TIP], _tmpC),
-    );
-    const thumbStraightDeg = angleAt(
-      _vecFrom(world[LM.THUMB_MCP], _tmpA),
-      _vecFrom(world[LM.THUMB_IP], _tmpB),
-      _vecFrom(world[LM.THUMB_TIP], _tmpC),
-    );
-    _curledCentroid
-      .copy(world[LM.INDEX_TIP]).add(world[LM.MIDDLE_TIP])
-      .add(world[LM.RING_TIP]).add(world[LM.PINKY_TIP])
-      .multiplyScalar(0.25);
-    const thumbClear = distance3(world[LM.THUMB_TIP], _curledCentroid) > 0.5 * this.handScale;
-    const fourCurled = this.indexCurlDeg < 130 && middleCurl < 130 && ringCurl < 130 && pinkyCurl < 130;
-    const wantThumbsUp = fourCurled && thumbStraightDeg > 140 && thumbClear;
-    this._thumbsUpHold = wantThumbsUp === this.thumbsUp ? 0 : this._thumbsUpHold + dtMs;
-    if (this._thumbsUpHold >= debounceMs) {
-      this.thumbsUp = wantThumbsUp;
-      this._thumbsUpHold = 0;
     }
   }
 
@@ -502,7 +433,6 @@ const _r3 = new THREE.Vector3();
 const _tmpA = new THREE.Vector3();
 const _tmpB = new THREE.Vector3();
 const _tmpC = new THREE.Vector3();
-const _curledCentroid = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 
 function distance3(a, b) {

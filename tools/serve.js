@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Zero-dependency static server for AR-Fight.
+ * Zero-dependency static server for Remade.
  *
  * Phones only grant `getUserMedia` on a secure origin, and `localhost` does not
  * help when the phone is a different machine. So this serves HTTPS with a
@@ -54,7 +54,7 @@ function ensureCert() {
     execFileSync('openssl', [
       'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
       '-keyout', KEY_FILE, '-out', CRT_FILE,
-      '-days', '365', '-subj', '/CN=ar-fight.local',
+      '-days', '365', '-subj', '/CN=remade.local',
       '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
     ], { stdio: 'ignore' });
     console.log('Generated a self-signed certificate in tools/certs/.');
@@ -134,7 +134,7 @@ if (!useHttp && ensureCert()) {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nAR-Fight served from ${ROOT}\n`);
+  console.log(`\nRemade served from ${ROOT}\n`);
   console.log(`  local:   ${scheme}://localhost:${PORT}/`);
   for (const ip of lanAddresses()) {
     console.log(`  network: ${scheme}://${ip}:${PORT}/   <- open this on the phone`);
