@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: mrwhite
+    runtime: node
+    plan: free
+    # --omit=optional skips playwright — a several-hundred-MB browser
+    # download only ever used by tools/smoke.js — and ws's own optional
+    # native accelerators, which it falls back from cleanly. Without this,
+    # Render's auto-detected default (plain `npm install`) would pull
+    # playwright into a production deploy for no reason.
+    buildCommand: npm ci --omit=optional
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
