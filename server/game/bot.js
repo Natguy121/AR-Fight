@@ -1,4 +1,4 @@
-import { WORDS } from '../../public/shared/game/words.js';
+import { CATEGORIES, WORDS, categoryOf, categoryForText, hintsFor } from '../../public/shared/game/words.js';
 import { isOneWord, normalize } from '../../public/shared/game/text.js';
 
 /**
@@ -11,25 +11,31 @@ import { isOneWord, normalize } from '../../public/shared/game/text.js';
  * cheating, not by being clever.
  *
  * With `ANTHROPIC_API_KEY` set, each decision asks Claude to reason about
- * the hints given so far. Without one, the fallback below still plays a
- * complete, legal game — deliberately unclever, so a fresh deploy on the
- * free tier does not need billing attached before anyone can add a bot to a
- * table.
+ * the hints given so far. Without one, the fallback below leans on the word
+ * list's categories instead of a language model: a civilian bot always knows
+ * its word's category, so its hints stay on-theme rather than generic; a
+ * Mr. White bot does not know the word, but if any hint so far — most
+ * reliably a fellow bot's, since it draws from this same vocabulary —
+ * matches a category, it borrows that theme too, which is the free
+ * approximation of "actually listening to the table." No language
+ * understanding is happening; it is a vocabulary lookup. It still beats a
+ * bot that answers every round with the same handful of filler words
+ * regardless of what anyone said.
  */
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const TIMEOUT_MS = 8000;
 
-/** Bland enough to fit almost anything — which is also what a real Mr. White
- *  with no word would reach for, so the fallback and the "no API key" case
- *  both land in character rather than looking obviously broken. */
+/** The last resort, when no category could be inferred at all — bland
+ *  enough to fit almost anything, which is also what a real Mr. White with
+ *  no word and nothing to go on would reach for. */
 const FILLER_HINTS = [
   'common', 'everyday', 'familiar', 'useful', 'ordinary', 'simple', 'basic',
   'known', 'typical', 'general', 'plain', 'regular', 'standard', 'shared',
   'popular', 'classic', 'handy', 'small', 'large', 'round', 'square', 'shiny',
   'quiet', 'loud', 'light', 'heavy', 'warm', 'cool', 'soft', 'solid', 'old',
-  'modern', 'indoor', 'outdoor', 'natural', 'colorful',
+  'modern', 'natural', 'colorful',
 ];
 
 export function isConfigured() {
@@ -85,6 +91,69 @@ function pickFiller(usedTexts) {
 }
 
 /**
+ * Best guess at what the round is "about," for the free fallback only.
+ *
+ * A civilian bot already knows the word, so this is exact — no guessing
+ * involved. Mr. White does not, so this looks at every hint given so far and
+ * checks it against the word list's own vocabulary; whichever category comes
+ * up most often is what the bot plays along with. It is a literal-match
+ * lookup, not comprehension — most freeform human hints will not match
+ * anything — but it means an AI Mr. White's next hint is shaped by what the
+ * table has actually said, rather than being deaf to it.
+ */
+function inferCategory(view) {
+  if (view.you.role === 'civilian' && view.word) return categoryOf(view.word);
+
+  const counts = new Map();
+  for (const h of view.hints) {
+    const cat = categoryForText(h.text);
+    if (cat) counts.set(cat, (counts.get(cat) ?? 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [cat, n] of counts) {
+    if (n > bestCount) { best = cat; bestCount = n; }
+  }
+  return best;
+}
+
+function pickFallbackHint(view, usedTexts) {
+  const category = inferCategory(view);
+  const wordNorm = view.word ? normalize(view.word) : null;
+  const onTheme = category
+    ? hintsFor(category).filter((w) => !usedTexts.has(w) && w !== wordNorm)
+    : [];
+  return onTheme.length
+    ? onTheme[Math.floor(Math.random() * onTheme.length)]
+    : pickFiller(usedTexts);
+}
+
+/**
+ * Vote fallback: if a theme could be inferred (always, for a civilian; only
+ * sometimes, for Mr. White), prefer whoever's most recent hint does *not*
+ * match it — an off-theme hint is real, if weak, evidence. With no theme to
+ * go on, or nobody off-theme, it falls back to picking anyone at random
+ * rather than inventing a signal that is not there.
+ */
+function pickFallbackVote(view, candidates) {
+  const category = inferCategory(view);
+  if (category) {
+    const offTheme = candidates.filter((p) => {
+      const last = [...view.hints].reverse().find((h) => h.playerId === p.id);
+      return last && categoryForText(last.text) !== category;
+    });
+    if (offTheme.length) return offTheme[Math.floor(Math.random() * offTheme.length)].id;
+  }
+  return candidates[Math.floor(Math.random() * candidates.length)].id;
+}
+
+function pickFallbackGuess(view) {
+  const category = inferCategory(view);
+  const pool = category ? CATEGORIES[category].words : WORDS;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/**
  * One word, guaranteed legal: unused this round, and — for a civilian bot —
  * never the secret word itself. `Game.submitHint` is the real referee, this
  * just makes sure the bot does not hand it a hint doomed to be rejected.
@@ -110,7 +179,7 @@ export async function chooseHint(view) {
   const clean = raw ? normalize(raw).split(/\s+/)[0] : null;
   const ok = clean && isOneWord(clean) && !usedTexts.has(clean)
     && (isWhite || clean !== normalize(view.word));
-  return ok ? clean : pickFiller(usedTexts);
+  return ok ? clean : pickFallbackHint(view, usedTexts);
 }
 
 /** A candidate id to vote for, or null if there is nobody left to vote for. */
@@ -132,7 +201,7 @@ export async function chooseVote(view) {
   const raw = await askClaude(system, user);
   const n = raw ? parseInt(raw.match(/\d+/)?.[0] ?? '', 10) : NaN;
   if (Number.isInteger(n) && n >= 1 && n <= candidates.length) return candidates[n - 1].id;
-  return candidates[Math.floor(Math.random() * candidates.length)].id;
+  return pickFallbackVote(view, candidates);
 }
 
 /** The bot's one guess after being caught as Mr. White. Always some word. */
@@ -144,7 +213,7 @@ export async function chooseGuess(view) {
 
   const raw = await askClaude(system, user);
   const clean = raw ? normalize(raw).split(/\s+/)[0] : null;
-  return clean && isOneWord(clean) ? clean : WORDS[Math.floor(Math.random() * WORDS.length)];
+  return clean && isOneWord(clean) ? clean : pickFallbackGuess(view);
 }
 
 export default { isConfigured, chooseHint, chooseVote, chooseGuess };

@@ -69,11 +69,17 @@ handed the exact same redacted view of the game a human at that seat would
 get, nothing more, so it isn't cheating by seeing what it shouldn't.
 
 With `ANTHROPIC_API_KEY` set on the server, its moves come from Claude
-reasoning about the hints given so far. Without one — which is the default
-on a fresh Render deploy, since Cloud Run-style billing is exactly the setup
-cost this project tries to avoid — the AI still plays a complete, legal
-game, it just reaches for a plausible-sounding filler word instead of
-actually reasoning about the round. The lobby says which mode you're in.
+reasoning about the hints given so far — real language understanding, not a
+lookup table. Without one — which is the default on a fresh Render deploy,
+since billing is exactly the setup cost this project tries to avoid — the AI
+falls back to the word list's own categories instead: a civilian bot always
+knows its word's category (`pillow` → "Around the house"), so its hints stay
+on-theme rather than generic, and a Mr. White bot, which does not know the
+word, borrows whatever category the hints already given seem to match —
+literal vocabulary lookup, not comprehension, but enough that its hints are
+visibly shaped by what the table already said rather than deaf to it. Once a
+category's short hint list runs dry it drops to genuinely generic filler,
+same as before. The lobby says which mode you're in.
 
 ```sh
 ANTHROPIC_API_KEY=sk-ant-... npm start   # smarter AI players, locally
@@ -244,11 +250,13 @@ instead of re-implementing the rules a second time for one browser tab.
 - **No spectators.** Joining mid-round means sitting out until the next one,
   which is also the only sane answer — being dealt in halfway through is not a
   thing that can happen at a real table either.
-- **Without an API key, AI players are unclever on purpose.** They play a
-  complete, legal game — a real hint every turn, a real vote, a real guess if
-  caught — but without `ANTHROPIC_API_KEY` they reach for a plausible filler
-  word rather than reasoning about the round, so a bot at the table without
-  one is easy to catch.
+- **Without an API key, AI players reason about vocabulary, not language.**
+  The category fallback (see "Playing against an AI," above) keeps hints and
+  votes on-theme far more often than a purely random bot would, but it is
+  still literal word matching — a hint that doesn't happen to share a word
+  with the category lists just won't be recognized, and there is no actual
+  understanding of what anyone said. It's a real step up from generic filler,
+  not a substitute for `ANTHROPIC_API_KEY`.
 - **Pass-and-play keeps no server, so it keeps no history.** Reloading the
   page mid-round loses that round — there's nothing to reconnect to, unlike
   the online version's reconnect tokens. Everyone's names and scores between

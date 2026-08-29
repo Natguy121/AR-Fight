@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Game, defaultMrWhiteCount } from '../public/shared/game/Game.js';
 import { normalize, isOneWord, sameWord } from '../public/shared/game/text.js';
-import { WORDS, drawWord } from '../public/shared/game/words.js';
+import { WORDS, drawWord, hintsFor } from '../public/shared/game/words.js';
 import * as bot from '../server/game/bot.js';
 import { Room } from '../server/Rooms.js';
 
@@ -735,6 +735,62 @@ await atest('without an API key, chooseGuess names a real word from the list', a
     g.startRound(WORD);
     const guess = await bot.chooseGuess(g.viewFor(g.players[0].id));
     assert.ok(WORDS.includes(guess), `"${guess}" is not in the word list`);
+  });
+});
+
+await atest('without an API key, a civilian bot\'s hint fits its word\'s category', async () => {
+  await withoutApiKey(async () => {
+    const g = table(3);
+    g.startRound('pillow'); // "Around the house"
+    const civilian = g.players.find((p) => p.role === 'civilian');
+    const hint = await bot.chooseHint(g.viewFor(civilian.id));
+    assert.ok(hintsFor('house').includes(hint), `"${hint}" is not one of pillow's house-category hints`);
+  });
+});
+
+await atest('without an API key, a Mr. White bot borrows the theme the table has already set', async () => {
+  await withoutApiKey(async () => {
+    const g = table(4);
+    g.startRound('pillow'); // "Around the house"
+    const white = g.players.find((p) => p.role === 'mrwhite');
+
+    // Whoever speaks before Mr. White gets a distinct on-theme hint — one of
+    // them literally "household", so there is a category for Mr. White to
+    // pick up on without knowing the word itself.
+    let i = 0;
+    while (g.currentTurnId() !== white.id) {
+      const speaker = g.currentTurnId();
+      const res = g.submitHint(speaker, i === 0 ? 'household' : `filler${i}`);
+      assert.ok(res.ok, `setup hint failed: ${res.error}`);
+      i += 1;
+    }
+
+    const hint = await bot.chooseHint(g.viewFor(white.id));
+    assert.ok(hintsFor('house').includes(hint),
+      `"${hint}" does not match the "household" theme already on the table`);
+  });
+});
+
+await atest('without an API key, a civilian bot\'s vote favors whoever went off the established theme', async () => {
+  await withoutApiKey(async () => {
+    const g = table(4);
+    g.startRound('pillow'); // "Around the house"
+    const civilian = g.players.find((p) => p.role === 'civilian');
+    const others = g.players.filter((p) => p.id !== civilian.id);
+    const offTheme = others[0];
+
+    const onThemeWords = ['indoor', 'household', 'domestic', 'handy', 'roomy', 'everyday'];
+    let onThemeIndex = 0;
+    while (g.phase === 'hint') {
+      const speaker = g.currentTurnId();
+      const text = speaker === offTheme.id ? 'submarine' : onThemeWords[onThemeIndex++];
+      const res = g.submitHint(speaker, text);
+      assert.ok(res.ok, `setup hint failed for ${speaker}: ${res.error}`);
+    }
+    assert.equal(g.phase, 'vote', 'setup should reach the vote without a tie');
+
+    const targetId = await bot.chooseVote(g.viewFor(civilian.id));
+    assert.equal(targetId, offTheme.id, 'did not single out the only off-theme hint');
   });
 });
 
