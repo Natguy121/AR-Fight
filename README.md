@@ -57,6 +57,49 @@ you need it somewhere public: any host that runs Node and allows WebSockets
 will do. Put it behind HTTPS and the client switches to `wss://` on its own.
 `PORT` and `HOST` are read from the environment.
 
+## More ways to play
+
+### Playing against an AI
+
+Short a player, or just want a table with something unpredictable at it?
+From the lobby, the host can tap **+ Add AI player** to seat one — it plays
+a full seat, same as anyone else: it can be dealt Mr. White or a civilian,
+gives its own hints, votes, and if it's caught, takes its own guess. It's
+handed the exact same redacted view of the game a human at that seat would
+get, nothing more, so it isn't cheating by seeing what it shouldn't.
+
+With `ANTHROPIC_API_KEY` set on the server, its moves come from Claude
+reasoning about the hints given so far. Without one — which is the default
+on a fresh Render deploy, since Cloud Run-style billing is exactly the setup
+cost this project tries to avoid — the AI still plays a complete, legal
+game, it just reaches for a plausible-sounding filler word instead of
+actually reasoning about the round. The lobby says which mode you're in.
+
+```sh
+ANTHROPIC_API_KEY=sk-ant-... npm start   # smarter AI players, locally
+```
+
+On Render, add the key from the dashboard under the service's Environment
+tab — `render.yaml` declares the variable but deliberately leaves it unset,
+so the value itself never lives in this repo.
+
+### Playing in person, on one phone
+
+No wifi needed, nothing to host — from the front page, **Play pass-and-play
+on one phone →** opens `local.html`, which runs the same rules engine
+(`public/shared/game/Game.js`) directly in the browser and has everyone
+pass one device around the table instead of connecting over a network.
+
+Roles and votes are still private — the app puts up a "pass the phone to
+_Name_" screen before showing anything sensitive, so whoever is holding it
+gets a beat to look away from the table first, the same way you'd cup a
+hand of cards. That said, this is a *procedural* privacy, not the online
+version's technical one: everything here lives in one page's memory rather
+than never leaving a server, so it depends on people actually not peeking —
+exactly the trust a physical card game already runs on. Hints, by contrast,
+are said out loud and just typed in afterwards, so there's a log to scroll
+back through later.
+
 ## Hosting it for real
 
 GitHub Pages and Firebase Hosting are both static-file-only — neither can run
@@ -159,13 +202,17 @@ npm run dev   # restarts on save
 ```
 server/
   index.js      HTTP, WebSockets, and the protocol in one comment block
-  Rooms.js      tables, seats, reconnection tokens
+  Rooms.js      tables, seats, reconnection tokens, seating AI players
   static.js     serving public/
   game/
-    Game.js     every rule, and no I/O at all
+    bot.js      the AI opponent: Claude for a move, or a safe fallback
+public/
+  shared/game/
+    Game.js     every rule, and no I/O at all — imported by server and browser alike
     words.js    the word list, and why a word earns its place
     text.js     what counts as one word, and what counts as the right guess
-public/         the client: one page, no framework, no build step
+  index.html, app.js       the online client: one page, no framework, no build step
+  local.html, local.js     pass-and-play: the same Game.js, run in one browser tab
 tools/          tests
 render.yaml, Dockerfile, firebase.json, firebase-public/   see Hosting it for real, above
 ```
@@ -174,7 +221,8 @@ render.yaml, Dockerfile, firebase.json, firebase-public/   see Hosting it for re
 `{ok:false, error}` back, nothing reaches for a socket or a clock. That is
 what lets the tests play whole games including the ones nearly impossible to
 reproduce by hand: a three-way tie, everyone disconnecting mid-vote, Mr. White
-naming the word on the last breath.
+naming the word on the last breath — and what let `local.js` reuse it wholesale
+instead of re-implementing the rules a second time for one browser tab.
 
 ## Known limits
 
@@ -196,6 +244,16 @@ naming the word on the last breath.
 - **No spectators.** Joining mid-round means sitting out until the next one,
   which is also the only sane answer — being dealt in halfway through is not a
   thing that can happen at a real table either.
+- **Without an API key, AI players are unclever on purpose.** They play a
+  complete, legal game — a real hint every turn, a real vote, a real guess if
+  caught — but without `ANTHROPIC_API_KEY` they reach for a plausible filler
+  word rather than reasoning about the round, so a bot at the table without
+  one is easy to catch.
+- **Pass-and-play keeps no server, so it keeps no history.** Reloading the
+  page mid-round loses that round — there's nothing to reconnect to, unlike
+  the online version's reconnect tokens. Everyone's names and scores between
+  rounds are remembered in that browser, though, so closing the tab and
+  reopening it picks the same table back up.
 
 ## Licence
 

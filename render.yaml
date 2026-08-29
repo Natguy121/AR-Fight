@@ -14,3 +14,9 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Optional. Without it, AI players still work — they just pick
+      # plausible-sounding filler words instead of reasoning about the
+      # round. Set sync: false so Render prompts for the value in its
+      # dashboard rather than it ever living in this repo.
+      - key: ANTHROPIC_API_KEY
+        sync: false

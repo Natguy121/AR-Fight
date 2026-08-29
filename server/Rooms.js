@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { Game } from './game/Game.js';
-import { drawWord } from './game/words.js';
+import { Game } from '../public/shared/game/Game.js';
+import { drawWord } from '../public/shared/game/words.js';
+import * as bot from './game/bot.js';
 
 /**
  * Tables, and the people sitting at them.
@@ -22,6 +23,10 @@ const MAX_ROOMS = 500;
 /** How long a table with nobody connected is held before it is forgotten. */
 const IDLE_MS = 30 * 60 * 1000;
 
+/** Bots never open a tab, so they never collide with a human's name choice
+ *  as long as this list does not repeat within one table. */
+const BOT_NAMES = ['Ada', 'Watson', 'Nova', 'Echo', 'Turing', 'Vega', 'Byte', 'Pixel', 'Juno', 'Orin'];
+
 export class Room {
   constructor(code) {
     this.code = code;
@@ -32,6 +37,11 @@ export class Room {
     this.tokens = new Map();
     /** Words this table has already had, so a night of play does not repeat. */
     this.usedWords = new Set();
+    /** Which seated players are AI-controlled. */
+    this.bots = new Set();
+    /** Bot ids with a decision already scheduled, so a re-broadcast before it
+     *  fires cannot queue the same move twice. */
+    this.botPending = new Set();
     this.touched = Date.now();
   }
 
@@ -47,7 +57,9 @@ export class Room {
   broadcast() {
     this.touched = Date.now();
     for (const [playerId, ws] of this.sockets) {
-      send(ws, { t: 'state', room: this.code, ...this.game.viewFor(playerId) });
+      const view = this.game.viewFor(playerId);
+      view.players = view.players.map((p) => ({ ...p, isBot: this.bots.has(p.id) }));
+      send(ws, { t: 'state', room: this.code, aiConfigured: bot.isConfigured(), ...view });
     }
   }
 
@@ -104,6 +116,34 @@ export class Room {
     const res = this.game.startRound(word);
     if (res.ok) this.usedWords.add(word);
     return res;
+  }
+
+  /** Seat an AI player. It never gets a socket — its moves are driven by
+   *  the server itself, reading the exact view a human at that seat would
+   *  get, so it has no more information than anyone else at the table. */
+  addBot() {
+    const label = this.nextBotName();
+    const playerId = `bot-${randomUUID()}`;
+    const res = this.game.addPlayer({ id: playerId, name: label });
+    if (!res.ok) return res;
+    this.bots.add(playerId);
+    return { ok: true, playerId };
+  }
+
+  removeBot(playerId) {
+    if (!this.bots.has(playerId)) return { ok: false, error: 'That is not an AI player.' };
+    this.bots.delete(playerId);
+    this.botPending.delete(playerId);
+    return this.game.removePlayer(playerId);
+  }
+
+  nextBotName() {
+    const taken = new Set(this.game.players.map((p) => p.name));
+    for (const n of BOT_NAMES) {
+      const label = `${n} (AI)`;
+      if (!taken.has(label)) return label;
+    }
+    return `Bot ${Math.floor(Math.random() * 1000)} (AI)`;
   }
 }
 

@@ -206,6 +206,57 @@ select { width: auto; padding-right: 34px; }
 .rules li { margin-bottom: 9px; }
 .rules b { color: var(--text); }
 
+/* ---------------------------------------------------- cross-mode nav link */
+
+.local-link {
+  margin-top: 18px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.9rem;
+}
+.local-link a { color: var(--text-dim); }
+
+/* --------------------------------------------------------- AI player rows */
+
+.bots-block { margin-bottom: var(--gap); }
+.bots-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+
+.bot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-weight: 550;
+}
+
+.bot-remove {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-left: 8px;
+}
+.bot-remove:active { color: var(--danger); }
+
+.tag.ai { color: var(--accent); border-color: var(--accent); }
+
+/* ------------------------------------------------------------- pass card */
+
+#screen-pass {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pass-card { cursor: default; }
+.pass-card .bigword { margin-bottom: 22px; }
+
 /* -------------------------------------------------------------- topbar */
 
 .topbar {

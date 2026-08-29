@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { Game, defaultMrWhiteCount } from '../server/game/Game.js';
-import { normalize, isOneWord, sameWord } from '../server/game/text.js';
-import { WORDS, drawWord } from '../server/game/words.js';
+import { Game, defaultMrWhiteCount } from '../public/shared/game/Game.js';
+import { normalize, isOneWord, sameWord } from '../public/shared/game/text.js';
+import { WORDS, drawWord } from '../public/shared/game/words.js';
+import * as bot from '../server/game/bot.js';
+import { Room } from '../server/Rooms.js';
 
 // --------------------------------------------------------------- tiny runner
 
@@ -21,6 +23,34 @@ function test(name, fn) {
     failed += 1;
     console.log(`  FAIL  ${name}`);
     console.log(`        ${err.message.split('\n').join('\n        ')}`);
+  }
+}
+
+/** Same as `test`, for a bot decision — those are async even on the no-API-key
+ *  path, since `chooseHint` etc. are `async function`s regardless of which
+ *  branch they take inside. Callers `await` this so console output and the
+ *  final tally stay in the same order the tests were written in. */
+async function atest(name, fn) {
+  try {
+    await fn();
+    passed += 1;
+    console.log(`  ok    ${name}`);
+  } catch (err) {
+    failed += 1;
+    console.log(`  FAIL  ${name}`);
+    console.log(`        ${err.message.split('\n').join('\n        ')}`);
+  }
+}
+
+/** Bot tests want the fallback path deterministically, regardless of what is
+ *  actually in the environment this happens to run in. */
+async function withoutApiKey(fn) {
+  const had = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    await fn();
+  } finally {
+    if (had !== undefined) process.env.ANTHROPIC_API_KEY = had;
   }
 }
 
@@ -660,6 +690,76 @@ test('a player who sat one round out is dealt into the next', () => {
   g.startRound('second-word');
   assert.equal(g.playerById('late').playing, true);
   assert.ok(g.order.includes('late'));
+});
+
+group('AI players');
+
+test('bot.isConfigured reflects ANTHROPIC_API_KEY', () => {
+  const had = process.env.ANTHROPIC_API_KEY;
+  try {
+    delete process.env.ANTHROPIC_API_KEY;
+    assert.equal(bot.isConfigured(), false);
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    assert.equal(bot.isConfigured(), true);
+  } finally {
+    if (had === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = had;
+  }
+});
+
+await atest('without an API key, chooseHint still returns a legal, unused word', async () => {
+  await withoutApiKey(async () => {
+    const g = table(3);
+    g.startRound(WORD);
+    const view = g.viewFor(g.players[0].id);
+    const hint = await bot.chooseHint(view);
+    assert.ok(isOneWord(hint), `"${hint}" is not one word`);
+    assert.ok(!view.hints.some((h) => h.text === normalize(hint)), 'reused an already-said word');
+  });
+});
+
+await atest('without an API key, chooseVote picks another player, never itself', async () => {
+  await withoutApiKey(async () => {
+    const g = table(4);
+    g.startRound(WORD);
+    const me = g.players[0];
+    const targetId = await bot.chooseVote(g.viewFor(me.id));
+    assert.ok(g.players.some((p) => p.id === targetId), 'voted for someone not at the table');
+    assert.notEqual(targetId, me.id, 'voted for itself');
+  });
+});
+
+await atest('without an API key, chooseGuess names a real word from the list', async () => {
+  await withoutApiKey(async () => {
+    const g = table(3);
+    g.startRound(WORD);
+    const guess = await bot.chooseGuess(g.viewFor(g.players[0].id));
+    assert.ok(WORDS.includes(guess), `"${guess}" is not in the word list`);
+  });
+});
+
+test('a Room seats an AI player with a unique, labeled name', () => {
+  const room = new Room('TEST');
+  const first = room.addBot();
+  const second = room.addBot();
+  assert.ok(first.ok && second.ok);
+  assert.ok(room.bots.has(first.playerId));
+  assert.ok(room.bots.has(second.playerId));
+  const names = room.game.players.map((p) => p.name);
+  assert.equal(new Set(names).size, names.length, 'two bots collided on a name');
+  assert.ok(names.every((n) => n.endsWith('(AI)')), 'a bot name does not say so');
+});
+
+test('Room.removeBot gives the seat back, and only for an AI seat', () => {
+  const room = new Room('TEST2');
+  const { playerId } = room.addBot();
+  const gone = room.removeBot(playerId);
+  assert.ok(gone.ok);
+  assert.ok(!room.bots.has(playerId));
+  assert.equal(room.game.playerById(playerId), null);
+
+  const human = room.join('Human');
+  assert.ok(!room.removeBot(human.playerId).ok, 'removeBot must refuse a human seat');
 });
 
 // ---------------------------------------------------------------------------

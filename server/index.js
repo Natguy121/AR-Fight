@@ -3,6 +3,7 @@ import os from 'node:os';
 import { WebSocketServer } from 'ws';
 import { Rooms, send } from './Rooms.js';
 import { serveStatic } from './static.js';
+import * as bot from './game/bot.js';
 
 /**
  * The server.
@@ -15,6 +16,8 @@ import { serveStatic } from './static.js';
  *   {t:'rejoin', code, token}       take back a seat after a dropped socket
  *   {t:'start'}                     host only: deal a round
  *   {t:'settings', mrWhiteCount}    host only
+ *   {t:'addBot'}                    host only: seat an AI player
+ *   {t:'removeBot', playerId}       host only
  *   {t:'hint',  text}               on your turn
  *   {t:'vote',  targetId}
  *   {t:'guess', text}               the caught Mr. White, once
@@ -78,7 +81,7 @@ wss.on('connection', (ws) => {
     const room = rooms.get(ws.roomCode);
     if (!room || !ws.playerId) return;
     room.unseat(ws.playerId, ws);
-    room.broadcast();
+    afterChange(room);
   });
 });
 
@@ -96,7 +99,7 @@ function attach(ws, room, playerId, token) {
   ws.playerId = playerId;
   room.seat(playerId, ws);
   send(ws, { t: 'joined', room: room.code, playerId, token });
-  room.broadcast();
+  afterChange(room);
 }
 
 function onCreate(ws, { name }) {
@@ -144,6 +147,14 @@ function onAction(ws, msg) {
       if (!mayDeal) return fail(ws, 'Only the host can change that.');
       res = game.setMrWhiteCount(msg.mrWhiteCount);
       break;
+    case 'addBot':
+      if (!mayDeal) return fail(ws, 'Only the host can add an AI player.');
+      res = room.addBot();
+      break;
+    case 'removeBot':
+      if (!mayDeal) return fail(ws, 'Only the host can remove an AI player.');
+      res = room.removeBot(msg.playerId);
+      break;
     case 'hint':
       res = game.submitHint(ws.playerId, msg.text);
       break;
@@ -159,7 +170,7 @@ function onAction(ws, msg) {
       ws.playerId = null;
       room.leave(playerId);
       send(ws, { t: 'left' });
-      room.broadcast();
+      afterChange(room);
       rooms.sweep();
       return undefined;
     }
@@ -168,7 +179,7 @@ function onAction(ws, msg) {
   }
 
   if (res.ok) {
-    room.broadcast();
+    afterChange(room);
   } else {
     // Nothing changed, so only the player who tried needs telling — but they
     // also get a fresh view, since a rejected action usually means their
@@ -177,6 +188,77 @@ function onAction(ws, msg) {
     send(ws, { t: 'state', room: room.code, ...game.viewFor(ws.playerId) });
   }
   return undefined;
+}
+
+// ------------------------------------------------------------------- bots
+
+/** Broadcast the new state, then let any AI players react to it. */
+function afterChange(room) {
+  room.broadcast();
+  driveBots(room);
+}
+
+const BOT_MIN_DELAY_MS = 1100;
+const BOT_MAX_DELAY_MS = 3200;
+
+/** Real hands take a moment; an instant reply reads as obviously fake. */
+function botThinkingTime() {
+  return BOT_MIN_DELAY_MS + Math.random() * (BOT_MAX_DELAY_MS - BOT_MIN_DELAY_MS);
+}
+
+/** Whichever bots owe the table a move right now, each gets one scheduled. */
+function driveBots(room) {
+  const { game } = room;
+  if (game.phase === 'hint') {
+    const id = game.currentTurnId();
+    if (id && room.bots.has(id)) scheduleBotMove(room, id, () => runBotHint(room, id));
+  } else if (game.phase === 'vote') {
+    for (const p of game.players) {
+      if (room.bots.has(p.id) && p.playing && p.alive && !game.votes.has(p.id)) {
+        scheduleBotMove(room, p.id, () => runBotVote(room, p.id));
+      }
+    }
+  } else if (game.phase === 'guess') {
+    if (room.bots.has(game.guesserId)) scheduleBotMove(room, game.guesserId, () => runBotGuess(room, game.guesserId));
+  }
+}
+
+function scheduleBotMove(room, playerId, run) {
+  if (room.botPending.has(playerId)) return; // already on its way
+  room.botPending.add(playerId);
+  setTimeout(async () => {
+    room.botPending.delete(playerId);
+    try {
+      await run();
+    } catch (err) {
+      console.error('[mr-white] bot error:', err);
+    }
+  }, botThinkingTime());
+}
+
+async function runBotHint(room, playerId) {
+  const { game } = room;
+  if (game.phase !== 'hint' || game.currentTurnId() !== playerId) return;
+  const text = await bot.chooseHint(game.viewFor(playerId));
+  // The table may have moved on while the bot (or the API call) was thinking.
+  if (game.phase !== 'hint' || game.currentTurnId() !== playerId) return;
+  if (game.submitHint(playerId, text).ok) afterChange(room);
+}
+
+async function runBotVote(room, playerId) {
+  const { game } = room;
+  if (game.phase !== 'vote' || game.votes.has(playerId)) return;
+  const targetId = await bot.chooseVote(game.viewFor(playerId));
+  if (!targetId || game.phase !== 'vote' || game.votes.has(playerId)) return;
+  if (game.submitVote(playerId, targetId).ok) afterChange(room);
+}
+
+async function runBotGuess(room, playerId) {
+  const { game } = room;
+  if (game.phase !== 'guess' || game.guesserId !== playerId) return;
+  const text = await bot.chooseGuess(game.viewFor(playerId));
+  if (game.phase !== 'guess' || game.guesserId !== playerId) return;
+  if (game.submitGuess(playerId, text).ok) afterChange(room);
 }
 
 const heartbeat = setInterval(() => {

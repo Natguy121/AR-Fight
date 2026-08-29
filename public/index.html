@@ -39,6 +39,10 @@
 
     <p class="error" id="entry-error" hidden></p>
 
+    <p class="local-link">
+      All in one room? <a href="./local.html">Play pass-and-play on one phone →</a>
+    </p>
+
     <details class="rules">
       <summary>How it works</summary>
       <ol>
@@ -99,6 +103,17 @@
             <option value="3">3</option>
           </select>
         </label>
+
+        <div class="bots-block">
+          <div class="bots-list" id="lobby-bots"></div>
+          <button id="btn-add-bot" class="btn" type="button">+ Add AI player</button>
+          <p class="fineprint" id="bots-note" hidden>
+            Playing a simpler bot game right now — the server has no
+            ANTHROPIC_API_KEY set, so AI players pick plausible-sounding
+            words instead of reasoning about the round.
+          </p>
+        </div>
+
         <button id="btn-start" class="btn btn-primary" type="button">Deal the round</button>
       </div>
       <p class="hint-text" id="lobby-waiting" hidden>Waiting for the host to deal…</p>

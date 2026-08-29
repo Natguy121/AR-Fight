@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0d1017" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Mr. White — pass and play</title>
+<link rel="stylesheet" href="./styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🕵️</text></svg>" />
+</head>
+<body>
+
+<!-- ------------------------------------------------------------ pass card -->
+<main id="screen-pass" class="screen" hidden>
+  <div class="role-card pass-card" id="pass-card">
+
+    <div id="pass-prompt">
+      <p class="role-round" id="pass-kicker"></p>
+      <p class="lede">Pass the phone to</p>
+      <div class="bigword" id="pass-name"></div>
+      <p class="role-note" id="pass-note"></p>
+      <button id="pass-ready" class="btn btn-primary" type="button">I have it</button>
+    </div>
+
+    <div id="pass-role" hidden>
+      <p class="role-kind" id="pass-role-kind"></p>
+      <div class="role-word" id="pass-role-word"></div>
+      <p class="role-note" id="pass-role-note"></p>
+      <button id="pass-role-ok" class="btn btn-primary" type="button">Got it — pass along</button>
+    </div>
+
+    <div id="pass-vote" hidden>
+      <p class="lede">Who is Mr. White?</p>
+      <div id="pass-vote-list" class="vote-list"></div>
+    </div>
+
+    <div id="pass-voted" hidden>
+      <p class="lede">Vote in.</p>
+      <p class="role-note">Pass the phone along.</p>
+      <button id="pass-voted-ok" class="btn btn-primary" type="button">Done — pass along</button>
+    </div>
+
+    <div id="pass-guess" hidden>
+      <p class="lede">Caught. One guess — what was the word?</p>
+      <div class="turn-card">
+        <input id="pass-guess-input" type="text" maxlength="30" autocomplete="off"
+               spellcheck="false" placeholder="the word" enterkeyhint="send" />
+        <button id="pass-guess-send" class="btn btn-primary" type="button">Say it</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- -------------------------------------------------------------- table -->
+<div id="screen-table" class="screen" hidden>
+
+  <header class="topbar">
+    <span class="brand">Mr.&nbsp;White</span>
+    <span class="code-chip">pass &amp; play</span>
+  </header>
+
+  <main class="stage">
+
+    <!-- ------------------------------------------------------- lobby -->
+    <section id="panel-lobby" class="panel" hidden>
+      <p class="lede">Who's playing?</p>
+      <p class="hint-text" id="lobby-count"></p>
+
+      <label class="field field-inline">
+        <span>Mr. Whites</span>
+        <select id="lobby-whites">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+      </label>
+
+      <button id="btn-start" class="btn btn-primary" type="button">Deal the round</button>
+    </section>
+
+    <!-- -------------------------------------------------------- hints -->
+    <section id="panel-hint" class="panel" hidden>
+      <p class="lede" id="hint-lede"></p>
+      <div class="turn-card">
+        <input id="hint-input" type="text" maxlength="20" autocomplete="off"
+               spellcheck="false" placeholder="what did they say?" enterkeyhint="send" />
+        <button id="hint-send" class="btn btn-primary" type="button">Said it</button>
+      </div>
+      <p class="error" id="hint-error" hidden></p>
+      <p class="fineprint">
+        Said out loud at the table — type it in afterwards so everyone can
+        look back at what was said.
+      </p>
+      <button id="btn-remind" class="btn btn-quiet" type="button">
+        Remind the current player privately
+      </button>
+    </section>
+
+    <!-- -------------------------------------------------------- reveal -->
+    <section id="panel-reveal" class="panel" hidden>
+      <p class="verdict" id="reveal-verdict"></p>
+      <p class="lede">The word was</p>
+      <div class="bigword" id="reveal-word"></div>
+      <div id="reveal-roles" class="roles"></div>
+      <button id="btn-next" class="btn btn-primary" type="button">Next round</button>
+      <button id="btn-reset" class="btn btn-quiet" type="button">New game — reset scores</button>
+    </section>
+
+    <!-- What has been said. -->
+    <section id="hints-so-far" class="hints" hidden>
+      <h2>What has been said</h2>
+      <div id="hint-log"></div>
+    </section>
+
+    <section class="players">
+      <h2>At the table</h2>
+      <div class="join-row" id="roster-add-row" hidden>
+        <input id="add-name" type="text" maxlength="16" autocomplete="off"
+               placeholder="Add a player" enterkeyhint="done" />
+        <button id="add-name-btn" class="btn" type="button">Add</button>
+      </div>
+      <p class="error" id="add-error" hidden></p>
+      <div id="player-list"></div>
+    </section>
+
+    <p class="local-link">
+      <a href="./index.html">← Play online instead</a>
+    </p>
+  </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<noscript>
+  <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
+  <p>This game needs JavaScript.</p></div></div>
+</noscript>
+
+<script type="module" src="./local.js"></script>
+</body>
+</html>

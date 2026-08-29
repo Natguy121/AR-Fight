@@ -220,7 +220,28 @@ function renderLobby(mayDeal) {
     if (document.activeElement !== select) {
       select.value = String(state.mrWhiteCount ?? (n >= 8 ? 2 : 1));
     }
+    renderBots();
   }
+}
+
+function renderBots() {
+  const bots = state.players.filter((p) => p.isBot);
+  $('lobby-bots').replaceChildren(...bots.map((p) => {
+    const row = document.createElement('div');
+    row.className = 'bot-row';
+    const name = document.createElement('span');
+    name.textContent = p.name;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'bot-remove';
+    remove.setAttribute('aria-label', `Remove ${p.name}`);
+    remove.textContent = '×';
+    remove.addEventListener('click', () => send({ t: 'removeBot', playerId: p.id }));
+    row.append(name, remove);
+    return row;
+  }));
+  $('bots-note').hidden = state.aiConfigured !== false;
+  $('btn-add-bot').disabled = state.players.length >= state.maxPlayers;
 }
 
 function renderHint() {
@@ -354,6 +375,8 @@ function renderPlayers() {
     else if (state.phase === 'vote' && p.playing && p.alive && p.voted) meta.append(tagEl('voted'));
     else if (state.phase === 'lobby' && p.id === state.hostId) meta.append(tagEl('host'));
     else if (state.phase !== 'lobby' && !p.playing) meta.append(tagEl('next round'));
+
+    if (p.isBot) meta.append(tagEl('AI', 'ai'));
 
     // A role only ever appears here once the server has made it public.
     if (p.role) meta.append(tagEl(p.role === 'mrwhite' ? 'Mr. White' : 'civilian',
@@ -545,6 +568,7 @@ $('btn-next').addEventListener('click', () => send({ t: 'start' }));
 $('lobby-whites').addEventListener('change', (e) => {
   send({ t: 'settings', mrWhiteCount: Number(e.target.value) });
 });
+$('btn-add-bot').addEventListener('click', () => send({ t: 'addBot' }));
 
 $('hint-send').addEventListener('click', sendHint);
 onEnter($('hint-input'), sendHint);
