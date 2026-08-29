@@ -57,6 +57,61 @@ you need it somewhere public: any host that runs Node and allows WebSockets
 will do. Put it behind HTTPS and the client switches to `wss://` on its own.
 `PORT` and `HOST` are read from the environment.
 
+## Hosting on Firebase
+
+**Firebase Hosting by itself cannot run this.** It is static file hosting,
+same as GitHub Pages — no room for the process in `server/index.js` that
+holds every table's state and speaks WebSockets to every phone. Getting this
+onto Firebase means Cloud Run underneath: Hosting serves as a thin proxy in
+front of a container running the exact same server this repo runs locally.
+
+**One rule that matters more than the rest: the Cloud Run service must run at
+`--max-instances=1`.** Game state lives in one process's memory, in one `Map`,
+with nothing shared between instances. Two instances means two Maps — a
+player's friend creates a table on instance A, they try to join on instance B,
+and B has never heard of that room code. This does not look like a crash, it
+looks like a wrong error message ("no table with that code") that seems to
+come and go, which is a much worse thing to debug at 11pm with four people
+waiting to play. Capping at one instance trades away horizontal scaling this
+game does not need anyway — a text word game for a few friends at a time asks
+almost nothing of the machine — for the correctness it does need.
+
+That single instance is not wasted money while nobody is playing: Cloud Run
+only scales an instance down once it has no connections left open, and a
+live WebSocket counts as one for as long as the phone stays connected. It
+scales to zero, and every table with it, only once everyone has actually
+left — which is the same "state lives in memory only" trade-off already
+called out below, not a new one.
+
+Deploying it:
+
+```sh
+npm install -g firebase-tools
+
+# One-time: build and deploy the server itself to Cloud Run. --source . has
+# Cloud Build read the Dockerfile in this repo directly, so there is no local
+# Docker registry to configure. --allow-unauthenticated makes it reachable by
+# the actual players, not just your own Google account.
+gcloud run deploy mrwhite \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --max-instances=1 \
+  --port=8080
+
+# One-time: point Firebase Hosting at that same service. firebase.json
+# already names it ("mrwhite", "us-central1") — change both there if you
+# deploy Cloud Run under a different name or region.
+cp .firebaserc.example .firebaserc   # then edit in your real Firebase project ID
+firebase deploy --only hosting
+```
+
+Both `gcloud` and `firebase` need you logged into your own account first
+(`gcloud auth login`, `firebase login`) — interactive browser steps that have
+to happen on your machine, not something that can be scripted through for
+you. After the first deploy, pushing an update is just re-running the two
+`deploy` commands.
+
 ## What is actually hard about building this
 
 **The word must never reach Mr. White's device.** Not hidden in the
@@ -86,7 +141,7 @@ not display it, which is a much weaker claim.
 ## Development
 
 ```sh
-npm test      # the rules: 45 tests, whole games played deterministically
+npm test      # the rules: 48 tests, whole games played deterministically
 npm run smoke # four real browsers playing a real game
 npm run verify# both
 npm run dev   # restarts on save
@@ -103,6 +158,7 @@ server/
     text.js     what counts as one word, and what counts as the right guess
 public/         the client: one page, no framework, no build step
 tools/          tests
+Dockerfile, firebase.json, firebase-public/   see Hosting on Firebase, above
 ```
 
 `Game.js` is a pure state machine — call a method, get `{ok}` or

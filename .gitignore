@@ -4,3 +4,9 @@ node_modules/
 
 # Smoke-test screenshots
 tools/shots/
+
+# Names the real Firebase project ID, which nothing here should assume for
+# you. Copy .firebaserc.example to .firebaserc and fill in your own — see
+# README.md#hosting-on-firebase.
+.firebaserc
+.firebase/
