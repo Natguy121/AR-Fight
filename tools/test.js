@@ -1,1120 +1,667 @@
-#!/usr/bin/env node
-/**
- * Headless checks for the parts of Remade that are hard to eyeball.
- *
- * Everything here runs without a GPU or a camera: the camera-to-world
- * mapping, the head-orientation filtering, the hand depth solver, and the
- * style pipeline. These are the pieces whose bugs would otherwise only show
- * up as "the room looks subtly wrong" while wearing a headset, which is a
- * miserable way to debug.
- *
- *   npm test
- */
-
-import * as THREE from 'three';
 import assert from 'node:assert/strict';
+import { Game, defaultMrWhiteCount } from '../server/game/Game.js';
+import { normalize, isOneWord, sameWord } from '../server/game/text.js';
+import { WORDS, drawWord } from '../server/game/words.js';
 
-import config from '../src/config.js';
-import { VideoFrameMap } from '../src/core/VideoFrameMap.js';
-import { HeadTracker } from '../src/core/HeadTracker.js';
-import { angleAt } from '../src/util/math3d.js';
-import { OneEuroFilter } from '../src/util/OneEuroFilter.js';
-import { HandPose } from '../src/hands/HandPose.js';
-import { LM } from '../src/hands/HandTracker.js';
-
-import {
-  makeStyle, lerpStyle, passthroughStyle, parseColor, normaliseRamp, TEXTURES,
-} from '../src/style/Style.js';
-import { restyleColorCPU } from '../src/render/Restyle.js';
-import { ThemeDirector, ThemeSource } from '../src/style/ThemeDirector.js';
-import {
-  makeTheme, lerpTheme, passthroughTheme, styleForClass, themeStyleTable, CLASSES, CLASS_COUNT,
-} from '../src/style/Theme.js';
-import { THEMES_ALL } from '../src/style/ThemeLibrary.js';
-import { ClassAtlas, RAMP_WIDTH, PARAM_TEXELS } from '../src/render/ClassAtlas.js';
-import { extractStyle } from '../src/style/ClaudeStylist.js';
+// --------------------------------------------------------------- tiny runner
 
 let passed = 0;
 let failed = 0;
-const failures = [];
-
-function test(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log(`  ok    ${name}`);
-  } catch (err) {
-    failed++;
-    failures.push({ name, err });
-    console.log(`  FAIL  ${name}\n        ${err.message.split('\n')[0]}`);
-  }
-}
-
-/** Same, for a test whose body needs to await something. */
-async function testAsync(name, fn) {
-  try {
-    await fn();
-    passed++;
-    console.log(`  ok    ${name}`);
-  } catch (err) {
-    failed++;
-    failures.push({ name, err });
-    console.log(`  FAIL  ${name}\n        ${err.message.split('\n')[0]}`);
-  }
-}
 
 function group(name) {
   console.log(`\n${name}`);
 }
 
-const near = (a, b, tol, msg) =>
-  assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b} +/- ${tol}, got ${a}`);
-
-// ---------------------------------------------------------------------------
-group('math3d');
-
-test('angleAt measures a straight line as 180 degrees', () => {
-  const a = new THREE.Vector3(-1, 0, 0);
-  const b = new THREE.Vector3(0, 0, 0);
-  const c = new THREE.Vector3(1, 0, 0);
-  near(angleAt(a, b, c), 180, 1e-6);
-});
-
-test('angleAt measures a right angle', () => {
-  const a = new THREE.Vector3(1, 0, 0);
-  const b = new THREE.Vector3(0, 0, 0);
-  const c = new THREE.Vector3(0, 1, 0);
-  near(angleAt(a, b, c), 90, 1e-6);
-});
-
-test('angleAt treats a degenerate span as straight rather than throwing', () => {
-  const p = new THREE.Vector3(1, 2, 3);
-  assert.equal(angleAt(p, p.clone(), new THREE.Vector3(0, 0, 0)), 180);
-});
-
-test('OneEuroFilter converges on a constant signal', () => {
-  const f = new OneEuroFilter({ minCutoff: 1, beta: 0, dCutoff: 1 });
-  let v = 0;
-  for (let i = 0; i < 200; i++) v = f.filter(5, i / 60);
-  near(v, 5, 1e-3, 'settles to the input');
-});
-// ---------------------------------------------------------------------------
-group('Barrel distortion (StereoRenderer)');
-
-/**
- * Mirrors the radial sample factor computed in DISTORT_FRAG
- * (src/core/StereoRenderer.js): `s = d * (1 + k1 r^2 + k2 r^4)`. GLSL cannot
- * run here, so this pure-JS copy is what actually gets tested — if the two
- * drift apart, re-sync this from the shader source.
- */
-function distortionFactor(r, k1, k2) {
-  const r2 = r * r;
-  return 1 + k1 * r2 + k2 * r2 * r2;
+function test(name, fn) {
+  try {
+    fn();
+    passed += 1;
+    console.log(`  ok    ${name}`);
+  } catch (err) {
+    failed += 1;
+    console.log(`  FAIL  ${name}`);
+    console.log(`        ${err.message.split('\n').join('\n        ')}`);
+  }
 }
 
-test('distortion is the identity at screen centre', () => {
-  const { distortionK1: k1, distortionK2: k2 } = config.stereo;
-  // This is the whole invariant: r=0 must sample r=0. A shader that scales
-  // this away from 1 magnifies (or shrinks) the entire view uniformly, worst
-  // exactly where the user is looking — a bug shipped once already, when an
-  // edge-fill normalisation divided the whole curve by its r=1 value and
-  // dragged the centre down to ~0.77, i.e. a ~1.3x zoom across the screen.
-  near(distortionFactor(0, k1, k2), 1, 1e-9, 'factor(0)');
-});
+// ------------------------------------------------------------- test helpers
 
-test('distortion factor increases monotonically outward', () => {
-  const { distortionK1: k1, distortionK2: k2 } = config.stereo;
-  let prev = distortionFactor(0, k1, k2);
-  for (let r = 0.05; r <= 1.5; r += 0.05) {
-    const f = distortionFactor(r, k1, k2);
-    assert.ok(f >= prev - 1e-9, `factor should not decrease outward (r=${r})`);
-    prev = f;
-  }
-});
-
-// ---------------------------------------------------------------------------
-group('VideoFrameMap');
-
-/** Video wider than the eye viewport, and matched FOVs: reconstruction is exact. */
-function makeFrameMap() {
-  const map = new VideoFrameMap();
-  map.setVideoAspect(16 / 9);
-  map.setDisplay(1.0, config.camera.verticalFovDeg);
-  return map;
-}
-
-test('unproject inverts the camera projection exactly', () => {
-  const map = makeFrameMap();
-  const tanHalf = Math.tan(THREE.MathUtils.degToRad(config.camera.verticalFovDeg) / 2);
-  const depth = 0.5;
-
-  for (const [ax, ay] of [[0, 0], [0.3, 0.2], [-0.45, 0.31], [0.1, -0.4]]) {
-    // Project a known camera-space point down to video-normalised coordinates.
-    const u = 0.5 + ax / (2 * tanHalf * map.videoAspect);
-    const v = 0.5 - ay / (2 * tanHalf);
-    const p = map.unproject(u, v, depth);
-    near(p.x, ax * depth, 1e-9, 'x');
-    near(p.y, ay * depth, 1e-9, 'y');
-    near(p.z, -depth, 1e-9, 'z');
-  }
-});
-
-test('unprojected points land under the same pixel through a real camera', () => {
-  const map = makeFrameMap();
-  const cam = new THREE.PerspectiveCamera(config.camera.verticalFovDeg, 1.0, 0.01, 100);
-  cam.updateMatrixWorld(true);
-
-  const u = 0.62;
-  const v = 0.38;
-  const expected = map.videoToNdc(u, v, new THREE.Vector2());
-
-  for (const depth of [0.2, 0.5, 1.0]) {
-    const world = map.unproject(u, v, depth).clone().project(cam);
-    near(world.x, expected.x, 1e-6, `ndc x at depth ${depth}`);
-    near(world.y, expected.y, 1e-6, `ndc y at depth ${depth}`);
-  }
-});
-
-test('cover-fit crops the wider axis', () => {
-  const wide = new VideoFrameMap();
-  wide.setVideoAspect(2.0);
-  wide.setDisplay(1.0, 70);
-  near(wide.scaleX, 2.0, 1e-9, 'scaleX');
-  near(wide.scaleY, 1.0, 1e-9, 'scaleY');
-
-  const tall = new VideoFrameMap();
-  tall.setVideoAspect(0.5);
-  tall.setDisplay(1.0, 70);
-  near(tall.scaleX, 1.0, 1e-9, 'scaleX');
-  near(tall.scaleY, 2.0, 1e-9, 'scaleY');
-});
-
-// ---------------------------------------------------------------------------
-group('Video rotation (frozen-orientation stream fix)');
-
-/**
- * Mirrors `rotateToRaw` from BACKGROUND_FRAG in src/core/StereoRenderer.js.
- * GLSL cannot run here, so this pure-JS copy is what actually gets tested —
- * it must be the exact inverse of VideoFrameMap's own `_rotateToEffective`,
- * or the shader and the hand-tracking reconstruction (which both consume the
- * same rotated stream, one on the GPU and one on the CPU) drift apart the
- * moment rotation is anything but 0: the background would show correctly
- * rotated video while every drawn stroke landed 90/180/270 degrees off it.
- */
-function rotateToRawGLSL(e, k) {
-  if (k === 1) return { x: e.y, y: 1 - e.x };
-  if (k === 2) return { x: 1 - e.x, y: 1 - e.y };
-  if (k === 3) return { x: 1 - e.y, y: e.x };
-  return { x: e.x, y: e.y };
-}
-
-test('the shader inverse exactly undoes VideoFrameMap for every rotation', () => {
-  const map = new VideoFrameMap();
-  const samples = [[0, 0], [1, 0], [0, 1], [1, 1], [0.5, 0.5], [0.2, 0.8], [0.73, 0.1]];
-
-  for (let k = 0; k < 4; k++) {
-    map.setRotation(k);
-    for (const [u, v] of samples) {
-      const effective = { x: 0, y: 0 };
-      map._rotateToEffective(u, v, effective);
-      const back = rotateToRawGLSL(effective, k);
-      near(back.x, u, 1e-9, `k=${k} u`);
-      near(back.y, v, 1e-9, `k=${k} v`);
-    }
-  }
-});
-
-test('a quarter turn swaps which axis the cover fit treats as wide', () => {
-  const map = new VideoFrameMap();
-  map.setVideoAspect(16 / 9); // landscape source
-  map.setDisplay(1.0, 70);    // square-ish display
-
-  map.setRotation(0);
-  near(map.effectiveAspect, 16 / 9, 1e-9, 'unrotated stays landscape');
-
-  map.setRotation(1);
-  near(map.effectiveAspect, 9 / 16, 1e-9, '90 degrees reads as portrait');
-
-  map.setRotation(2);
-  near(map.effectiveAspect, 16 / 9, 1e-9, '180 degrees stays landscape');
-
-  map.setRotation(3);
-  near(map.effectiveAspect, 9 / 16, 1e-9, '270 degrees reads as portrait');
-});
-
-test('setRotation normalises any integer into 0-3', () => {
-  const map = new VideoFrameMap();
-  map.setRotation(5);
-  assert.equal(map.rotation, 1, '5 -> 1');
-  map.setRotation(-1);
-  assert.equal(map.rotation, 3, '-1 -> 3');
-  map.setRotation(8);
-  assert.equal(map.rotation, 0, '8 -> 0');
-});
-
-test('a rotated landmark still reprojects onto the pixel it came from', () => {
-  // Same invariant as the unrotated reprojection test above, but with a 90
-  // degree correction in effect — the whole point of threading rotation
-  // through unproject() rather than patching it on separately.
-  const map = new VideoFrameMap();
-  map.setVideoAspect(16 / 9);
-  map.setDisplay(1.0, config.camera.verticalFovDeg);
-  map.setRotation(1);
-
-  const cam = new THREE.PerspectiveCamera(config.camera.verticalFovDeg, 1.0, 0.01, 100);
-  cam.updateMatrixWorld(true);
-
-  const u = 0.62;
-  const v = 0.38;
-  const expected = map.videoToNdc(u, v, new THREE.Vector2());
-
-  for (const depth of [0.2, 0.5, 1.0]) {
-    const world = map.unproject(u, v, depth).clone().project(cam);
-    near(world.x, expected.x, 1e-6, `ndc x at depth ${depth}`);
-    near(world.y, expected.y, 1e-6, `ndc y at depth ${depth}`);
-  }
-});
-
-// ---------------------------------------------------------------------------
-group('HeadTracker rotation smoothing');
-
-/** A HeadTracker with the sensor path forced on, bypassing DOM event wiring. */
-function fakeHeadTracker() {
-  const head = new HeadTracker(null);
-  head.hasSensor = true;
-  return head;
-}
-
-test('a still-but-noisy sensor is damped, not passed straight through', () => {
-  const head = fakeHeadTracker();
-  head._screenAngle = Math.PI / 2; // landscape, matches real use
-
-  // A deterministic pseudo-random generator so this test is reproducible.
-  let seed = 12345;
-  const noise = (amplitudeRad) => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return ((seed / 0x7fffffff) * 2 - 1) * amplitudeRad;
+/** mulberry32: a seeded RNG, so a failing game can be replayed exactly. */
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
 
-  const rawDeltas = [];
-  const smoothedDeltas = [];
-  let prevRaw = null;
-  let prevSmoothed = null;
+const WORD = 'zzqword'; // distinctive, so a leak check cannot false-positive
 
-  for (let i = 0; i < 180; i++) {
-    // A hand held "still" still reads a couple of degrees of sensor noise.
-    head._raw.alpha = noise(THREE.MathUtils.degToRad(2));
-    head._raw.beta = noise(THREE.MathUtils.degToRad(2));
-    head._raw.gamma = noise(THREE.MathUtils.degToRad(2));
+function table(n, opts = {}) {
+  const game = new Game({ rng: seeded(7), ...opts });
+  for (let i = 0; i < n; i++) game.addPlayer({ id: `p${i}`, name: `Player${i}` });
+  return game;
+}
 
-    const raw = head._composeDeviceQuaternion(new THREE.Quaternion());
-    const smoothed = head.update(i / 60).clone();
-
-    if (prevRaw) {
-      rawDeltas.push(THREE.MathUtils.radToDeg(prevRaw.angleTo(raw)));
-      smoothedDeltas.push(THREE.MathUtils.radToDeg(prevSmoothed.angleTo(smoothed)));
-    }
-    prevRaw = raw;
-    prevSmoothed = smoothed;
-  }
-
-  // Skip the initial settling window; steady-state behaviour is what matters.
-  const steadyRaw = rawDeltas.slice(60);
-  const steadySmoothed = smoothedDeltas.slice(60);
-  const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
-  const avgRawJitter = avg(steadyRaw);
-  const avgSmoothedJitter = avg(steadySmoothed);
-
-  assert.ok(avgSmoothedJitter < avgRawJitter * 0.5,
-    `expected smoothed frame-to-frame jitter well below raw; raw avg=${avgRawJitter.toFixed(3)}deg, smoothed avg=${avgSmoothedJitter.toFixed(3)}deg`);
-});
-
-test('a steady head turn is tracked with bounded lag, not left behind', () => {
-  const head = fakeHeadTracker();
-  head._screenAngle = Math.PI / 2;
-
-  const degPerSec = 90; // a brisk but ordinary turn
-  const dt = 1 / 60;
-  let lastYaw = 0;
-
-  for (let i = 0; i < 120; i++) { // 2 seconds — long enough to reach steady state
-    const t = i * dt;
-    head._raw.alpha = degPerSec * t * (Math.PI / 180);
-    lastYaw = head._raw.alpha;
-    head.update(t);
-  }
-
-  const forward = head.getForward(new THREE.Vector3());
-  // alpha feeds yaw (rotation about world Y) via the YXZ Euler composition;
-  // recover it the same way HeadTracker.recenter() does.
-  const trackedYaw = Math.atan2(forward.x, -forward.z);
-  const expectedYaw = ((-lastYaw % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-  const trackedYawNorm = ((trackedYaw % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-  let lagDeg = THREE.MathUtils.radToDeg(Math.abs(expectedYaw - trackedYawNorm));
-  if (lagDeg > 180) lagDeg = 360 - lagDeg;
-
-  // At beta=0.6, minCutoff=0.4 and 90deg/s, steady-state lag should settle
-  // to a fraction of a frame's worth of motion, nowhere near a full second
-  // behind — this is the "doesn't feel laggy while actually turning" half
-  // of the trade-off the jitter test above covers the other half of.
-  assert.ok(lagDeg < 15, `expected steady-state lag under 15deg at ${degPerSec}deg/s, got ${lagDeg.toFixed(2)}deg`);
-});
-
-test('recentre resets the smoother so the next frame snaps instead of gliding', () => {
-  const head = fakeHeadTracker();
-  head._screenAngle = Math.PI / 2;
-  // beta=0 reads as the phone lying flat, screen up — forward ends up
-  // pointing straight down, where yaw is undefined (the north-pole problem).
-  // This app only runs held upright, matching a Cardboard shell: beta~90deg.
-  head._raw.beta = Math.PI / 2;
-
-  // Build up smoothed state pointing one way.
-  for (let i = 0; i < 30; i++) {
-    head._raw.alpha = 0;
-    head.update(i / 60);
-  }
-
-  // Recentre while facing a very different direction.
-  head._raw.alpha = Math.PI / 2; // 90deg yaw
-  head.recenter();
-
-  // Immediately after, "forward" must already read as straight ahead — not
-  // partway through a multi-frame glide from the old orientation.
-  head.update(30 / 60);
-  const forward = head.getForward(new THREE.Vector3());
-  const yaw = Math.atan2(forward.x, -forward.z);
-  near(THREE.MathUtils.radToDeg(yaw), 0, 1, 'yaw should read ~0deg (straight ahead) on the very first post-recentre frame');
-});
-
-// ---------------------------------------------------------------------------
-group('HandPose depth solver');
+const whitesIn = (g) => g.players.filter((p) => p.playing && p.role === 'mrwhite');
+const civiliansIn = (g) => g.players.filter((p) => p.playing && p.role === 'civilian');
+const aliveIn = (g) => g.players.filter((p) => p.playing && p.alive);
 
 /**
- * A plausible right hand, palm in the XY plane, fingers along +Y, in metres.
- * Only the relative geometry matters to the solver.
+ * Play out the hint phase with throwaway words.
+ *
+ * The counter is module-level on purpose: hints must be unique for the whole
+ * round, not just the current pass, so a per-call counter would start
+ * colliding with itself the moment a tie sent the table round again.
  */
-function buildHandModel() {
-  const p = (x, y, z) => new THREE.Vector3(x, y, z);
-  const lm = new Array(21);
-  lm[LM.WRIST] = p(0, -0.045, 0);
-  lm[LM.THUMB_CMC] = p(-0.022, -0.028, 0.006);
-  lm[LM.THUMB_MCP] = p(-0.038, -0.006, 0.010);
-  lm[LM.THUMB_IP] = p(-0.048, 0.014, 0.012);
-  lm[LM.THUMB_TIP] = p(-0.054, 0.032, 0.013);
-  lm[LM.INDEX_MCP] = p(-0.020, 0.038, 0);
-  lm[LM.INDEX_PIP] = p(-0.023, 0.070, -0.002);
-  lm[LM.INDEX_DIP] = p(-0.025, 0.091, -0.004);
-  lm[LM.INDEX_TIP] = p(-0.026, 0.108, -0.006);
-  lm[LM.MIDDLE_MCP] = p(0.001, 0.043, 0);
-  lm[LM.MIDDLE_PIP] = p(0.001, 0.077, -0.002);
-  lm[LM.MIDDLE_DIP] = p(0.001, 0.100, -0.005);
-  lm[LM.MIDDLE_TIP] = p(0.001, 0.119, -0.008);
-  lm[LM.RING_MCP] = p(0.021, 0.038, 0);
-  lm[LM.RING_PIP] = p(0.023, 0.069, -0.003);
-  lm[LM.RING_DIP] = p(0.025, 0.090, -0.006);
-  lm[LM.RING_TIP] = p(0.026, 0.107, -0.009);
-  lm[LM.PINKY_MCP] = p(0.039, 0.028, 0);
-  lm[LM.PINKY_PIP] = p(0.043, 0.052, -0.003);
-  lm[LM.PINKY_DIP] = p(0.046, 0.068, -0.006);
-  lm[LM.PINKY_TIP] = p(0.048, 0.082, -0.008);
-
-  // MediaPipe centres world landmarks on the hand; mirror that.
-  const centre = new THREE.Vector3();
-  for (const v of lm) centre.add(v);
-  centre.multiplyScalar(1 / lm.length);
-  for (const v of lm) v.sub(centre);
-  return lm;
+let hintCounter = 0;
+function playHints(g) {
+  let guard = 0;
+  while (g.phase === 'hint') {
+    if (guard++ > 200) throw new Error('hint phase never ended');
+    const id = g.currentTurnId();
+    const res = g.submitHint(id, `hint${hintCounter++}`);
+    assert.ok(res.ok, `hint rejected: ${res.error}`);
+  }
 }
 
 /**
- * Render the model as MediaPipe would: metric `worldLandmarks` in model space,
- * plus the 2D projection of that model placed at `depth` under rotation `quat`.
+ * Everyone still in it votes for `victim` — except the victim, who has to
+ * put their ballot somewhere else, since nobody may vote for themselves.
  */
-function synthesiseDetection(model, quat, depth, map) {
-  const tanHalf = Math.tan(THREE.MathUtils.degToRad(config.camera.verticalFovDeg) / 2);
-  const landmarks = [];
-  const worldLandmarks = model.map((v) => ({ x: v.x, y: v.y, z: v.z }));
-
-  const camPoints = model.map((v) =>
-    v.clone().applyQuaternion(quat).add(new THREE.Vector3(0, 0, -depth)),
-  );
-  const wristDepth = -camPoints[LM.WRIST].z;
-
-  for (const c of camPoints) {
-    const d = -c.z;
-    const ax = c.x / d;
-    const ay = c.y / d;
-    landmarks.push({
-      x: 0.5 + ax / (2 * tanHalf * map.videoAspect),
-      y: 0.5 - ay / (2 * tanHalf),
-      // MediaPipe's relative z: larger means farther from the camera.
-      z: d - wristDepth,
-    });
+function allVoteFor(g, victimId) {
+  for (const p of g.players.filter((x) => x.playing && x.alive && x.connected)) {
+    if (g.phase !== 'vote') break;
+    const target = p.id === victimId
+      ? aliveIn(g).find((x) => x.id !== p.id).id
+      : victimId;
+    const res = g.submitVote(p.id, target);
+    assert.ok(res.ok, `vote rejected: ${res.error}`);
   }
-  return { landmarks, worldLandmarks, handedness: 'Right', score: 1, camPoints };
 }
 
-/** Drive a pose to convergence on a static input. */
-function settle(pose, detection, map, frames = 90) {
-  const headQuat = new THREE.Quaternion();
-  const headPos = new THREE.Vector3();
-  for (let i = 0; i < frames; i++) {
-    pose.update(detection, map, headQuat, headPos, i / 60, 1 / 60);
+/** Everyone votes according to `pick(voter) -> targetId`. */
+function allVote(g, pick) {
+  for (const p of g.players.filter((x) => x.playing && x.alive && x.connected)) {
+    if (g.phase !== 'vote') break;
+    const res = g.submitVote(p.id, pick(p));
+    assert.ok(res.ok, `vote rejected: ${res.error}`);
   }
-  return pose;
 }
 
-test('recovers distance for a hand facing the camera', () => {
-  const map = makeFrameMap();
-  const model = buildHandModel();
-  const det = synthesiseDetection(model, new THREE.Quaternion(), 0.45, map);
-  const pose = settle(new HandPose(), det, map);
-  near(pose.depth, 0.45, 0.45 * 0.05, 'depth within 5%');
-});
-
-test('distance survives a steep tilt, where bone-length scaling fails', () => {
-  const map = makeFrameMap();
-  const model = buildHandModel();
-  // 55 degrees about X foreshortens every palm bone dramatically.
-  const quat = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(55),
-  );
-  const det = synthesiseDetection(model, quat, 0.4, map);
-  const pose = settle(new HandPose(), det, map);
-  near(pose.depth, 0.4, 0.4 * 0.08, 'depth within 8% despite tilt');
-});
-
-test('recovers distance across a range of depths', () => {
-  const map = makeFrameMap();
-  const model = buildHandModel();
-  const quat = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(-25),
-  );
-  for (const depth of [0.25, 0.35, 0.5, 0.7]) {
-    const det = synthesiseDetection(model, quat, depth, map);
-    const pose = settle(new HandPose(), det, map);
-    near(pose.depth, depth, depth * 0.08, `depth ${depth}`);
-  }
-});
-
-test('reconstructed landmarks match the true camera-space geometry', () => {
-  const map = makeFrameMap();
-  const model = buildHandModel();
-  const quat = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(1, 0.4, 0).normalize(), THREE.MathUtils.degToRad(30),
-  );
-  const det = synthesiseDetection(model, quat, 0.42, map);
-  const pose = settle(new HandPose(), det, map);
-
-  for (const i of [LM.WRIST, LM.INDEX_TIP, LM.PINKY_MCP, LM.THUMB_TIP]) {
-    const error = pose.viewLandmarks[i].distanceTo(det.camPoints[i]);
-    assert.ok(error < 0.02, `landmark ${i} off by ${(error * 1000).toFixed(1)} mm`);
-  }
-});
-
-/**
- * Same idea as `synthesiseDetection`, but for a `map` with a non-identity
- * `rotation`/`mirrorX` — i.e. a device whose raw camera stream needs
- * correcting, exactly like the one that motivated `toEffectiveUV`. MediaPipe
- * runs on the *raw* stream, so its 2D landmarks are raw-sensor-relative; this
- * applies the true inverse of `map`'s own forward transform (rotate then,
- * only if mirrored, flip — the same order the background shader's inverse
- * uses) to turn a "what the physical world really looks like" projection
- * into "what MediaPipe would actually report" for that camera.
- */
-function synthesiseRawDetection(model, quat, depth, map) {
-  const tanHalf = Math.tan(THREE.MathUtils.degToRad(config.camera.verticalFovDeg) / 2);
-  const worldLandmarks = model.map((v) => ({ x: v.x, y: v.y, z: v.z }));
-  const camPoints = model.map((v) =>
-    v.clone().applyQuaternion(quat).add(new THREE.Vector3(0, 0, -depth)),
-  );
-  const wristDepth = -camPoints[LM.WRIST].z;
-
-  const landmarks = camPoints.map((c) => {
-    const d = -c.z;
-    const trueU = 0.5 + (c.x / d) / (2 * tanHalf * map.videoAspect);
-    const trueV = 0.5 - (c.y / d) / (2 * tanHalf);
-    const rotated = rotateToRawGLSL({ x: trueU, y: trueV }, map.rotation);
-    const rawU = map.mirrorX ? 1 - rotated.x : rotated.x;
-    return { x: rawU, y: rotated.y, z: d - wristDepth };
-  });
-  return { landmarks, worldLandmarks, handedness: 'Right', score: 1, camPoints };
-}
-
-test('depth and orientation survive a rotated, mirrored camera feed', () => {
-  // The exact configuration a player reaches via btn-fliprot (180°) plus the
-  // manual mirror toggle to fix an upside-down, reflected feed. Before
-  // `toEffectiveUV`, `_solvePose`'s image tangents were computed straight
-  // from raw MediaPipe u/v, silently assuming an unrotated, unmirrored
-  // camera — a reflection is not something any rotation can explain away, so
-  // the POSIT fit solved a systematically wrong depth and orientation the
-  // moment mirroring was actually in effect, even though the affected
-  // landmark still reprojected onto the right on-screen pixel.
-  const map = makeFrameMap();
-  map.setRotation(2);
-  map.mirrorX = true;
-  const model = buildHandModel();
-  const quat = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(1, 0.4, 0).normalize(), THREE.MathUtils.degToRad(30),
-  );
-
-  const det = synthesiseRawDetection(model, quat, 0.42, map);
-  const pose = settle(new HandPose(), det, map);
-
-  near(pose.depth, 0.42, 0.42 * 0.08, 'depth within 8% despite rotation+mirror');
-  for (const i of [LM.WRIST, LM.INDEX_TIP, LM.PINKY_MCP, LM.THUMB_TIP]) {
-    const error = pose.viewLandmarks[i].distanceTo(det.camPoints[i]);
-    assert.ok(error < 0.02, `landmark ${i} off by ${(error * 1000).toFixed(1)} mm`);
-  }
-  assert.ok(pose.forward.y > 0.9, `forward should still point up the hand, got ${pose.forward.y}`);
-});
-
-test('reconstruction reprojects onto its own pixels despite an FOV mismatch', () => {
-  // The headline claim in VideoFrameMap: because landmarks are lifted with the
-  // *render* camera's projection, they land under the pixels they came from
-  // even when our guess at the phone's lens FOV is wrong. Here the render FOV
-  // (72) differs from the capture FOV the frames were synthesised with (59),
-  // which is exactly the error the design is meant to absorb.
-  assert.notEqual(
-    config.stereo.eyeFovDeg, config.camera.verticalFovDeg,
-    'this test is only meaningful when the two FOVs differ',
-  );
-
-  const map = new VideoFrameMap();
-  map.setVideoAspect(16 / 9);
-  map.setDisplay(1.0, config.stereo.eyeFovDeg);
-
-  const model = buildHandModel();
-  const det = synthesiseDetection(model, new THREE.Quaternion(), 0.5, map);
-  const pose = settle(new HandPose(), det, map);
-
-  const cam = new THREE.PerspectiveCamera(config.stereo.eyeFovDeg, 1.0, 0.01, 100);
-  cam.updateMatrixWorld(true);
-
-  for (const i of [LM.WRIST, LM.INDEX_TIP, LM.MIDDLE_MCP, LM.PINKY_TIP]) {
-    const expected = map.videoToNdc(det.landmarks[i].x, det.landmarks[i].y, new THREE.Vector2());
-    const projected = pose.viewLandmarks[i].clone().project(cam);
-    near(projected.x, expected.x, 1e-5, `landmark ${i} ndc x`);
-    near(projected.y, expected.y, 1e-5, `landmark ${i} ndc y`);
-  }
-});
-
-test('grip frame is right-handed and points along the hand', () => {
-  const map = makeFrameMap();
-  const model = buildHandModel();
-  const det = synthesiseDetection(model, new THREE.Quaternion(), 0.45, map);
-  const pose = settle(new HandPose(), det, map);
-
-  near(pose.forward.length(), 1, 1e-6, 'forward normalised');
-  near(pose.up.length(), 1, 1e-6, 'up normalised');
-  near(pose.forward.dot(pose.up), 0, 1e-6, 'forward orthogonal to up');
-
-  const cross = new THREE.Vector3().crossVectors(pose.forward, pose.up);
-  near(cross.dot(pose.right), 1, 1e-6, 'right-handed basis');
-
-  // Model fingers run along +Y, so wrist -> knuckles must too.
-  assert.ok(pose.forward.y > 0.9, `forward should point up the hand, got ${pose.forward.y}`);
-});
-
-// ---------------------------------------------------------------------------
-group('Style (validation, for model-authored input)');
-
-test('parseColor accepts hex, short hex, 0-1 triples and 0-255 triples', () => {
-  assert.deepEqual(parseColor('#ff0000'), [1, 0, 0]);
-  assert.deepEqual(parseColor('f00'), [1, 0, 0]);
-  assert.deepEqual(parseColor([0, 1, 0]), [0, 1, 0]);
-  const bytes = parseColor([255, 128, 0]);
-  near(bytes[0], 1, 1e-6);
-  near(bytes[1], 128 / 255, 1e-6);
-});
-
-test('parseColor falls back rather than throwing on nonsense', () => {
-  assert.deepEqual(parseColor('not a colour', [0.2, 0.3, 0.4]), [0.2, 0.3, 0.4]);
-  assert.deepEqual(parseColor(null, [0, 0, 0]), [0, 0, 0]);
-  assert.deepEqual(parseColor(['a', 'b', 'c'], [1, 1, 1]), [1, 1, 1]);
-});
-
-test('makeStyle clamps every out-of-range number into something renderable', () => {
-  const s = makeStyle({
-    chroma: 50, contrast: -10, textureStrength: 99,
-    edgeStrength: -3, sheen: 900, textureScale: 1e9,
-  });
-  assert.ok(s.chroma >= 0 && s.chroma <= 1, `chroma ${s.chroma}`);
-  assert.ok(s.contrast >= 0.2 && s.contrast <= 3, `contrast ${s.contrast}`);
-  assert.ok(s.textureStrength >= 0 && s.textureStrength <= 1);
-  assert.ok(s.edgeStrength >= 0 && s.edgeStrength <= 1);
-  assert.ok(s.sheen >= 0 && s.sheen <= 1.5);
-  assert.ok(s.textureScale <= 400);
-});
-
-test('makeStyle survives garbage without throwing', () => {
-  for (const junk of [null, undefined, 42, 'hello', [], { ramp: 'nope' }]) {
-    const s = makeStyle(junk);
-    assert.equal(s.ramp.length, 4, `ramp length for ${JSON.stringify(junk)}`);
-    assert.ok(Number.isFinite(s.chroma));
-  }
-});
-
-test('an unknown texture name degrades to none instead of a broken enum', () => {
-  assert.equal(makeStyle({ texture: 'obsidian' }).texture, 'none');
-  assert.equal(makeStyle({ texture: 'VEINS' }).texture, 'veins');
-  assert.ok(Object.hasOwn(TEXTURES, makeStyle({ texture: 42 }).texture));
-});
-
-test('normaliseRamp stretches a short ramp instead of padding it with grey', () => {
-  const two = normaliseRamp(['#000000', '#ffffff']);
-  assert.equal(two.length, 4);
-  near(two[0][0], 0, 1e-6, 'first stop preserved');
-  near(two[3][0], 1, 1e-6, 'last stop preserved');
-  // Strictly increasing: a grey-padded ramp would flatten somewhere.
-  for (let i = 1; i < 4; i++) {
-    assert.ok(two[i][0] > two[i - 1][0], `stop ${i} brighter than ${i - 1}`);
-  }
-});
-
-test('every shipped theme round-trips through validation unchanged', () => {
-  // If a theme came back altered it would mean the shipped values are out of
-  // range and being silently clamped — i.e. what renders is not what is
-  // written here. Whether it preserves shading is checked further down,
-  // measured through the whole pipeline rather than guessed from the ramp.
-  for (const theme of THEMES_ALL) {
-    assert.deepEqual(makeTheme(theme), theme, `${theme.id} is not stable under makeTheme`);
-  }
-});
-
-test('lerpStyle moves continuously between two styles', () => {
-  const a = makeStyle({ chroma: 0, contrast: 1, ramp: ['#000000', '#000000', '#000000', '#000000'] });
-  const b = makeStyle({ chroma: 1, contrast: 2, ramp: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'] });
-  near(lerpStyle(a, b, 0).chroma, 0, 1e-9);
-  near(lerpStyle(a, b, 1).chroma, 1, 1e-9);
-  near(lerpStyle(a, b, 0.5).chroma, 0.5, 1e-9);
-  near(lerpStyle(a, b, 0.25).ramp[0][0], 0.25, 1e-9);
-  // Out-of-range t is clamped, not extrapolated into invalid colours.
-  near(lerpStyle(a, b, 5).chroma, 1, 1e-9);
-  near(lerpStyle(a, b, -5).chroma, 0, 1e-9);
-});
-
-// ---------------------------------------------------------------------------
-group('Restyle (the shape-preserving repaint)');
-
-test('the passthrough style is the exact identity, not merely close', () => {
-  // This is what makes "off" genuinely free. If it ever drifts, the app is
-  // quietly degrading the camera image even when nothing is applied.
-  const off = passthroughTheme().base;
-  for (const rgb of [[0, 0, 0], [1, 1, 1], [0.2, 0.6, 0.9], [0.5, 0.5, 0.5], [0.83, 0.11, 0.42]]) {
-    const out = restyleColorCPU(rgb, off);
-    for (let c = 0; c < 3; c++) near(out[c], rgb[c], 1e-9, `channel ${c} of ${rgb}`);
-  }
-});
-
-test('luminance still orders the output, so shading survives the repaint', () => {
-  // The core claim: a darker patch of a real object stays darker after being
-  // repainted, which is what keeps its 3D form readable and reachable.
-  for (const style of THEMES_ALL.flatMap((t) => themeStyleTable(t))) {
-    const greys = [0.05, 0.25, 0.5, 0.75, 0.95];
-    const brightness = greys.map((g) => {
-      const out = restyleColorCPU([g, g, g], style);
-      return out[0] + out[1] + out[2];
-    });
-    for (let i = 1; i < brightness.length; i++) {
-      assert.ok(
-        brightness[i] >= brightness[i - 1] - 1e-6,
-        `${style.id}: ${greys[i]} came out darker than ${greys[i - 1]}`,
-      );
-    }
-    // And it must not collapse to a single flat tone.
+/** The property the whole game rests on. */
+function assertNoLeak(g, where) {
+  if (g.phase === 'reveal') return;
+  for (const p of g.players) {
+    if (p.role !== 'mrwhite') continue;
+    const json = JSON.stringify(g.viewFor(p.id)).toLowerCase();
     assert.ok(
-      brightness[brightness.length - 1] - brightness[0] > 0.25,
-      `${style.id}: repaint flattened the shading (spread ${(brightness[4] - brightness[0]).toFixed(3)})`,
+      !json.includes(WORD),
+      `${where}: the word reached Mr. White (${p.name}) during phase "${g.phase}"`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+group('Words');
+
+test('the list is big enough that a night of play does not repeat', () => {
+  assert.ok(WORDS.length >= 150, `only ${WORDS.length} words`);
+});
+
+test('every word is a single lowercase word with no stray whitespace', () => {
+  for (const w of WORDS) {
+    assert.equal(w, w.trim(), `"${w}" has stray whitespace`);
+    assert.ok(!/\s/.test(w), `"${w}" is more than one word`);
+    assert.equal(w, w.toLowerCase(), `"${w}" is not lowercase`);
+  }
+});
+
+test('there are no duplicates', () => {
+  assert.equal(new Set(WORDS).size, WORDS.length);
+});
+
+test('drawWord avoids what has already been played', () => {
+  const used = new Set(WORDS.slice(0, WORDS.length - 1));
+  const w = drawWord(used, seeded(3));
+  assert.equal(w, WORDS[WORDS.length - 1], 'should pick the only unused word');
+});
+
+test('drawWord starts over rather than failing once every word is used', () => {
+  const w = drawWord(new Set(WORDS), seeded(3));
+  assert.ok(WORDS.includes(w));
+});
+
+// ---------------------------------------------------------------------------
+group('Text rules');
+
+test('a hint is one word', () => {
+  assert.ok(isOneWord('kitchen'));
+  assert.ok(isOneWord("O'Brien"));
+  assert.ok(isOneWord('twenty-one'));
+  assert.ok(!isOneWord('a thing you sit on'));
+  assert.ok(!isOneWord('two words'));
+  assert.ok(!isOneWord(''));
+  assert.ok(!isOneWord('   '));
+});
+
+test('normalize is case- and whitespace-insensitive', () => {
+  assert.equal(normalize('  Kitchen  '), 'kitchen');
+  assert.equal(normalize('two   words'), 'two words');
+});
+
+test('a guess survives case, punctuation and a plural', () => {
+  assert.ok(sameWord('Piano', 'piano'));
+  assert.ok(sameWord(' piano! ', 'piano'));
+  assert.ok(sameWord('glasses', 'glass'), 'plural in the guess');
+  assert.ok(sameWord('glass', 'glasses'), 'plural in the word');
+  assert.ok(sameWord('cats', 'cat'));
+});
+
+test('a guess is not fuzzy beyond that — a synonym is still a miss', () => {
+  assert.ok(!sameWord('sofa', 'couch'));
+  assert.ok(!sameWord('pian', 'piano'));
+  assert.ok(!sameWord('', 'piano'));
+});
+
+// ---------------------------------------------------------------------------
+group('Dealing a round');
+
+test('a table needs three players', () => {
+  const g = table(2);
+  const res = g.startRound(WORD);
+  assert.ok(!res.ok);
+  assert.match(res.error, /3 players/);
+});
+
+test('names must be unique, and blank names are refused', () => {
+  const g = table(0);
+  assert.ok(g.addPlayer({ id: 'a', name: 'Sam' }).ok);
+  assert.ok(!g.addPlayer({ id: 'b', name: ' sam ' }).ok, 'same name in different case');
+  assert.ok(!g.addPlayer({ id: 'c', name: '   ' }).ok, 'blank name');
+});
+
+test('the first player to arrive is the host, and hosting passes on when they go', () => {
+  const g = table(3);
+  assert.equal(g.hostId, 'p0');
+  g.removePlayer('p0');
+  assert.equal(g.hostId, 'p1');
+});
+
+test('a host whose phone sleeps is still the host when it wakes', () => {
+  // The reveal is exactly when everyone looks up from their screen, so a host
+  // demoted for locking their phone would lose the buttons at the worst
+  // possible moment — and get them back never.
+  const g = table(4);
+  g.setConnected('p0', false);
+  assert.equal(g.hostId, 'p0', 'hosting should not move on a dropped connection');
+  g.setConnected('p0', true);
+  assert.ok(g.canDeal('p0'));
+});
+
+test('but the table can still deal while the host is away', () => {
+  const g = table(4);
+  assert.ok(!g.canDeal('p1'), 'not while the host is here');
+  g.setConnected('p0', false);
+  assert.ok(g.canDeal('p1'), 'the table must not be stuck behind an absent host');
+  g.setConnected('p0', true);
+  assert.ok(!g.canDeal('p1'), 'and it goes back to the host once they return');
+});
+
+test('whether you may deal is stated in your own view, not left to be guessed', () => {
+  const g = table(4);
+  assert.equal(g.viewFor('p0').youCanDeal, true);
+  assert.equal(g.viewFor('p1').youCanDeal, false);
+  g.setConnected('p0', false);
+  assert.equal(g.viewFor('p1').youCanDeal, true);
+  assert.equal(g.viewFor('nobody').youCanDeal, false, 'a stranger may not deal');
+});
+
+test('exactly one Mr. White at a small table, two at a large one', () => {
+  assert.equal(defaultMrWhiteCount(3), 1);
+  assert.equal(defaultMrWhiteCount(7), 1);
+  assert.equal(defaultMrWhiteCount(8), 2);
+
+  const small = table(5);
+  small.startRound(WORD);
+  assert.equal(whitesIn(small).length, 1);
+
+  const big = table(9);
+  big.startRound(WORD);
+  assert.equal(whitesIn(big).length, 2);
+});
+
+test('Mr. Whites can never be dealt in numbers that win the round immediately', () => {
+  const g = table(3, { mrWhiteCount: 3 });
+  g.startRound(WORD);
+  // Three of three would mean the round is over before a word is said.
+  assert.equal(whitesIn(g).length, 1);
+  assert.ok(civiliansIn(g).length > whitesIn(g).length);
+});
+
+test('everyone who is not Mr. White gets the word', () => {
+  const g = table(6);
+  g.startRound(WORD);
+  for (const p of g.players) {
+    const view = g.viewFor(p.id);
+    if (p.role === 'civilian') assert.equal(view.word, WORD);
+    else assert.equal(view.word, null);
+  }
+});
+
+test('the first speaker is never Mr. White', () => {
+  // Over many deals, since it is the shuffle being constrained.
+  for (let seed = 0; seed < 60; seed++) {
+    const g = new Game({ rng: seeded(seed) });
+    for (let i = 0; i < 5; i++) g.addPlayer({ id: `p${i}`, name: `Player${i}` });
+    g.startRound(WORD);
+    assert.equal(
+      g.playerById(g.order[0]).role, 'civilian',
+      `seed ${seed} put Mr. White first, with nothing to go on`,
     );
   }
 });
 
-test('chroma at zero discards the real hue; at one it keeps it', () => {
-  const grey = ['#000000', '#555555', '#aaaaaa', '#ffffff'];
-  const flat = makeStyle({ ramp: grey, chroma: 0, contrast: 1, sheen: 0 });
-  const kept = makeStyle({ ramp: grey, chroma: 1, contrast: 1, sheen: 0 });
-  const red = [0.9, 0.1, 0.1];
-
-  const a = restyleColorCPU(red, flat);
-  near(a[0], a[1], 0.02, 'chroma 0 leaves no colour cast');
-  near(a[1], a[2], 0.02);
-
-  const b = restyleColorCPU(red, kept);
-  assert.ok(b[0] - b[2] > 0.5, `chroma 1 should keep the red, got ${b}`);
+test('someone who arrives mid-round sits out until the next one', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  g.addPlayer({ id: 'late', name: 'Late' });
+  const late = g.playerById('late');
+  assert.equal(late.playing, false);
+  assert.equal(late.role, null);
+  assert.equal(g.viewFor('late').word, null, 'and certainly does not get the word');
+  assert.ok(!g.order.includes('late'));
 });
 
-test('output always stays inside the displayable range', () => {
-  const extreme = makeStyle({
-    ramp: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'],
-    chroma: 1, contrast: 3, sheen: 1.5, sheenColor: '#ffffff',
-  });
-  for (const rgb of [[1, 1, 1], [0, 0, 0], [1, 0, 0.5]]) {
-    for (const c of restyleColorCPU(rgb, extreme)) {
-      assert.ok(c >= 0 && c <= 1, `${c} out of range for ${rgb}`);
+// ---------------------------------------------------------------------------
+group('Giving hints');
+
+test('turns are taken in order, and only in order', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  const [first, second] = g.order;
+  assert.ok(!g.submitHint(second, 'early').ok, 'out-of-turn hint accepted');
+  assert.ok(g.submitHint(first, 'ok').ok);
+  assert.equal(g.currentTurnId(), second);
+});
+
+test('a hint must be one word, and cannot repeat one already said', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  const id = g.currentTurnId();
+  assert.ok(!g.submitHint(id, 'two words').ok);
+  assert.ok(g.submitHint(id, 'kettle').ok);
+  const next = g.currentTurnId();
+  const dup = g.submitHint(next, 'KETTLE');
+  assert.ok(!dup.ok, 'a repeat in different case was allowed');
+  assert.match(dup.error, /already been said/);
+});
+
+test('a civilian may not say the word itself', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  const id = g.currentTurnId(); // guaranteed civilian
+  const res = g.submitHint(id, WORD);
+  assert.ok(!res.ok);
+  assert.match(res.error, /cannot say the word/);
+});
+
+test('but Mr. White may — rejecting it would tell them they had guessed right', () => {
+  // The leak this protects against is subtle and total: a "you cannot use
+  // that word" reply is a confirmation, and one free confirmation is the
+  // whole game.
+  const g = table(4);
+  g.startRound(WORD);
+  const white = whitesIn(g)[0];
+  // Walk the order round to them.
+  let guard = 0;
+  while (g.currentTurnId() !== white.id) {
+    if (guard++ > 20) throw new Error('never reached Mr. White');
+    assert.ok(g.submitHint(g.currentTurnId(), `filler${guard}`).ok);
+  }
+  const res = g.submitHint(white.id, WORD);
+  assert.ok(res.ok, `Mr. White was blocked from the word: ${res.error}`);
+  assert.ok(g.hints.some((h) => h.text === WORD), 'and it stands as their hint');
+});
+
+test('the vote opens once everyone has spoken', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  assert.equal(g.phase, 'vote');
+  assert.equal(g.hints.length, 4);
+});
+
+// ---------------------------------------------------------------------------
+group('Voting');
+
+test('you cannot vote for yourself, or for someone already out', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const [a, b] = aliveIn(g);
+  assert.ok(!g.submitVote(a.id, a.id).ok);
+  b.alive = false;
+  assert.ok(!g.submitVote(a.id, b.id).ok);
+});
+
+test('a vote can be changed until the last ballot lands', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const [a, b, c] = aliveIn(g);
+  g.submitVote(a.id, b.id);
+  g.submitVote(a.id, c.id);
+  assert.equal(g.viewFor(a.id).yourVote, c.id);
+  assert.equal(g.phase, 'vote', 'changing a vote must not resolve it');
+});
+
+test('who has voted is public; what they voted is not', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const [a, b] = aliveIn(g);
+  g.submitVote(a.id, b.id);
+
+  const seenByB = g.viewFor(b.id);
+  assert.equal(seenByB.players.find((p) => p.id === a.id).voted, true);
+  assert.equal(seenByB.yourVote, null, 'B has not voted, so has no vote of their own');
+  assert.ok(
+    !JSON.stringify(seenByB).includes(`"targetId"`),
+    'ballots must not be visible while the vote is open',
+  );
+});
+
+test('the most-voted player is eliminated and their role becomes public', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const alive = aliveIn(g);
+  const victim = alive[1];
+  allVote(g, (p) => (p.id === victim.id ? alive[0].id : victim.id));
+
+  assert.equal(g.playerById(victim.id).alive, false);
+  const seenByOthers = g.viewFor(alive[0].id);
+  assert.equal(seenByOthers.players.find((p) => p.id === victim.id).role, victim.role);
+});
+
+test('a tie eliminates nobody and sends it back for another pass', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const alive = aliveIn(g);
+  // Two each way.
+  allVote(g, (p) => (p === alive[0] || p === alive[1] ? alive[2].id : alive[0].id));
+
+  assert.equal(g.phase, 'hint', 'a tie should reopen the hints');
+  assert.equal(g.hintPass, 2);
+  assert.equal(aliveIn(g).length, 4, 'nobody goes out on a tie');
+  assert.ok(g.log.some((e) => e.t === 'tie'));
+});
+
+test('after a tie the vote is cleared, not carried over', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const alive = aliveIn(g);
+  allVote(g, (p) => (p === alive[0] || p === alive[1] ? alive[2].id : alive[0].id));
+  assert.equal(g.viewFor(alive[0].id).yourVote, null);
+});
+
+// ---------------------------------------------------------------------------
+group('Catching Mr. White');
+
+test('being caught is not the end — Mr. White gets one guess at the word', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+
+  assert.equal(g.phase, 'guess');
+  assert.equal(g.guesserId, white.id);
+});
+
+test('naming the word wins the round outright, even from the gallows', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+  g.submitGuess(white.id, WORD.toUpperCase());
+
+  assert.equal(g.phase, 'reveal');
+  assert.equal(g.outcome.winner, 'mrwhite');
+  assert.equal(g.outcome.reason, 'guessed');
+  assert.equal(g.playerById(white.id).score, 6);
+  for (const c of civiliansIn(g)) assert.equal(c.score, 0);
+});
+
+test('guessing wrong ends it for the civilians', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+  g.submitGuess(white.id, 'something-else');
+
+  assert.equal(g.phase, 'reveal');
+  assert.equal(g.outcome.winner, 'civilians');
+  for (const c of civiliansIn(g)) assert.equal(c.score, 2);
+  assert.equal(g.playerById(white.id).score, 0);
+});
+
+test('a civilian voted out early still scores when their side wins', () => {
+  // Suspicion is not a crime. Docking the wrongly-accused would teach people
+  // to give hints so vague they say nothing, which is the opposite of the game.
+  const g = table(5);
+  g.startRound(WORD);
+  const white = whitesIn(g)[0];
+  const scapegoat = civiliansIn(g)[0];
+
+  playHints(g);
+  allVote(g, (p) => (p.id === scapegoat.id ? white.id : scapegoat.id));
+  assert.equal(g.phase, 'hint', 'a civilian went out, so play continues');
+
+  playHints(g);
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+  g.submitGuess(white.id, 'wrong');
+
+  assert.equal(g.outcome.winner, 'civilians');
+  assert.equal(g.playerById(scapegoat.id).score, 2);
+});
+
+test('only the caught Mr. White may answer, and only once', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+
+  const other = civiliansIn(g)[0];
+  assert.ok(!g.submitGuess(other.id, WORD).ok, 'a civilian answered for them');
+  assert.ok(g.submitGuess(white.id, 'nope').ok);
+  assert.ok(!g.submitGuess(white.id, WORD).ok, 'a second bite at the guess');
+});
+
+test('Mr. White wins by lasting until the table is level', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  const white = whitesIn(g)[0];
+
+  // Vote out civilians until only the standoff is left.
+  let guard = 0;
+  while (g.phase !== 'reveal') {
+    if (guard++ > 10) throw new Error('round never ended');
+    playHints(g);
+    allVoteFor(g, aliveIn(g).find((p) => p.role === 'civilian').id);
+  }
+
+  assert.equal(g.outcome.winner, 'mrwhite');
+  assert.equal(g.outcome.reason, 'survived');
+  assert.equal(g.playerById(white.id).score, 6);
+});
+
+// ---------------------------------------------------------------------------
+group('The word never reaches Mr. White');
+
+test('not in any view, in any phase, across a whole game', () => {
+  const g = table(5);
+  g.startRound(WORD);
+  assertNoLeak(g, 'after the deal');
+
+  let guard = 0;
+  while (g.phase !== 'reveal') {
+    if (guard++ > 20) throw new Error('round never ended');
+    while (g.phase === 'hint') {
+      g.submitHint(g.currentTurnId(), `w${guard}x${g.hints.length}`);
+      assertNoLeak(g, 'mid-hint');
+    }
+    if (g.phase !== 'vote') continue;
+    const alive = aliveIn(g);
+    const victim = alive.find((p) => p.role === 'civilian') ?? alive[0];
+    for (const p of alive) {
+      if (g.phase !== 'vote') break;
+      const target = p.id === victim.id ? alive.find((x) => x !== p).id : victim.id;
+      g.submitVote(p.id, target);
+      assertNoLeak(g, 'mid-vote');
+    }
+    if (g.phase === 'guess') {
+      assertNoLeak(g, 'while Mr. White is guessing');
+      g.submitGuess(g.guesserId, 'wrong');
     }
   }
+  assert.equal(g.phase, 'reveal');
+  assert.equal(g.viewFor(whitesIn(g)[0].id).word, WORD, 'and is shown at the reveal');
+});
+
+test('not through an eliminated Mr. White who is waiting on the reveal', () => {
+  // Two Mr. Whites, one caught. Showing the word to the dead one would hand
+  // it to the live one across the table in about a second.
+  const g = table(8, { mrWhiteCount: 2 });
+  g.startRound(WORD);
+  playHints(g);
+  const [caught] = whitesIn(g);
+  allVote(g, (p) => (p.id === caught.id ? aliveIn(g)[0].id : caught.id));
+  g.submitGuess(caught.id, 'wrong');
+
+  assert.notEqual(g.phase, 'reveal', 'one Mr. White is still in it');
+  assert.equal(g.viewFor(caught.id).word, null);
+  assertNoLeak(g, 'after a failed guess');
+});
+
+test('not to a spectator who joined mid-round', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  g.addPlayer({ id: 'late', name: 'Late' });
+  assert.equal(g.viewFor('late').word, null);
 });
 
 // ---------------------------------------------------------------------------
-group('ThemeDirector (decide once, then hold)');
+group('Nobody can hang the table');
 
-/** A minimal in-memory Storage, so persistence is testable off-browser. */
-function fakeStorage() {
-  const map = new Map();
-  return {
-    getItem: (k) => (map.has(k) ? map.get(k) : null),
-    setItem: (k, v) => map.set(k, String(v)),
-    removeItem: (k) => map.delete(k),
-  };
-}
+test('a player who drops on their turn is skipped, not waited for', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  const onTurn = g.currentTurnId();
+  g.setConnected(onTurn, false);
 
-/** A source that hands out styles in a fixed order, and counts its calls. */
-function countingSource(ids = ['a', 'b', 'c']) {
-  let i = 0;
-  return {
-    name: 'Counting',
-    calls: 0,
-    async pick() {
-      this.calls++;
-      const id = ids[i % ids.length];
-      i++;
-      return { id, name: id, ramp: ['#000000', '#444444', '#999999', '#ffffff'] };
-    },
-  };
-}
-
-await testAsync('nothing but an explicit call can change the style', async () => {
-  const source = countingSource();
-  const d = new ThemeDirector({ source, storage: null, fadeSeconds: 0 });
-
-  await d.transform();
-  const chosen = d.target.id;
-  assert.equal(source.calls, 1);
-
-  // The whole point: time passing and frames rendering must not re-decide.
-  // In the app this is the "look away and back" case — update() is the only
-  // thing a frame calls, and it has no path to the source at all.
-  for (let i = 0; i < 600; i++) d.update(1 / 60);
-
-  assert.equal(d.target.id, chosen, 'style changed without being asked');
-  assert.equal(source.calls, 1, 'source consulted again without being asked');
+  assert.notEqual(g.currentTurnId(), onTurn, 'the game stalled on an empty chair');
+  assert.ok(g.log.some((e) => e.t === 'skip' && e.playerId === onTurn));
 });
 
-await testAsync('next() is the only way to move on, and avoids repeating', async () => {
-  const source = countingSource(['a', 'b']);
-  const d = new ThemeDirector({ source, storage: null, fadeSeconds: 0 });
-  await d.transform();
-  assert.equal(d.target.id, 'a');
-  await d.next();
-  assert.equal(d.target.id, 'b');
-  assert.equal(source.calls, 2);
+test('a vote resolves on the people still here, not the people who left', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const alive = aliveIn(g);
+  const absent = alive[3];
+  const victim = alive[1];
+
+  for (const p of [alive[0], alive[1], alive[2]]) {
+    g.submitVote(p.id, p.id === victim.id ? alive[0].id : victim.id);
+  }
+  assert.equal(g.phase, 'vote', 'still waiting on the fourth');
+  g.setConnected(absent.id, false);
+  assert.notEqual(g.phase, 'vote', 'the vote should resolve once they are gone');
 });
 
-await testAsync('a second call while one is in flight is ignored, not queued', async () => {
-  // Otherwise a double-tap leaves two picks racing to be the one that sticks.
-  let release;
-  const gate = new Promise((r) => { release = r; });
-  const source = {
-    name: 'Slow',
-    calls: 0,
-    async pick() { this.calls++; await gate; return { id: 'slow' }; },
-  };
-  const d = new ThemeDirector({ source, storage: null, fadeSeconds: 0 });
-  const first = d.transform();
-  await d.transform();
-  release();
-  await first;
-  assert.equal(source.calls, 1);
+test('a Mr. White who vanishes rather than guess forfeits it', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+  assert.equal(g.phase, 'guess');
+
+  g.setConnected(white.id, false);
+  assert.equal(g.phase, 'reveal');
+  assert.equal(g.outcome.winner, 'civilians');
 });
 
-await testAsync('the choice survives a reload', async () => {
-  const storage = fakeStorage();
-  const a = new ThemeDirector({ source: countingSource(['jade']), storage, fadeSeconds: 0 });
-  await a.transform();
-
-  // A fresh director, as if the page had been reloaded, with a source that
-  // would hand out something different if it were consulted at all.
-  const source = countingSource(['iron']);
-  const b = new ThemeDirector({ source, storage, fadeSeconds: 0 });
-  assert.equal(b.active, true, 'restored as transformed');
-  assert.equal(b.target.id, 'jade', 'restored the same material');
-  assert.equal(source.calls, 0, 'restoring must not consult the source');
+test('walking out mid-round counts as being eliminated', () => {
+  const g = table(5);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  g.removePlayer(white.id);
+  // Losing the only Mr. White ends it, by way of the forfeited guess.
+  assert.equal(g.phase, 'reveal');
+  assert.equal(g.outcome.winner, 'civilians');
 });
 
-await testAsync('off() clears the memory so a reload comes back untouched', async () => {
-  const storage = fakeStorage();
-  const a = new ThemeDirector({ source: countingSource(), storage, fadeSeconds: 0 });
-  await a.transform();
-  a.off();
-  assert.equal(a.active, false);
-
-  const b = new ThemeDirector({ source: countingSource(), storage, fadeSeconds: 0 });
-  assert.equal(b.active, false, 'reload after off should stay off');
-});
-
-test('a corrupt saved style is discarded rather than retried forever', () => {
-  const storage = fakeStorage();
-  storage.setItem('ar-reskin-theme', '{ not json');
-  const d = new ThemeDirector({ source: countingSource(), storage, fadeSeconds: 0 });
-  assert.equal(d.active, false);
-  assert.equal(storage.getItem('ar-reskin-theme'), null, 'bad entry cleared');
-});
-
-await testAsync('a cross-fade runs only on a deliberate change, and settles', async () => {
-  const d = new ThemeDirector({ source: countingSource(['a', 'b']), storage: null, fadeSeconds: 0.5 });
-  await d.transform();
-  assert.equal(d.isFading, true, 'the first transform fades in');
-  for (let i = 0; i < 60; i++) d.update(1 / 60);
-  assert.equal(d.isFading, false, 'settles within the fade duration');
-  assert.equal(d.current.id, d.target.id, 'lands exactly on the target');
-
-  // At rest, further frames are inert.
-  const before = d.current;
-  d.update(1 / 60);
-  assert.equal(d.current, before, 'a settled director stops producing new styles');
-});
-
-await testAsync('a failing source leaves the previous look untouched', async () => {
-  const d = new ThemeDirector({
-    source: { name: 'Broken', async pick() { throw new Error('offline'); } },
-    storage: null,
-    fadeSeconds: 0,
-  });
-  await assert.rejects(() => d.transform());
-  assert.equal(d.active, false, 'a failed pick must not claim to have transformed');
-  assert.equal(d.lastError.message, 'offline');
-});
-
-test('ThemeSource never returns the excluded theme when alternatives exist', async () => {
-  const source = new ThemeSource(THEMES_ALL, () => 0);
-  // With a random() pinned to 0 it would always return the first entry;
-  // excluding that one must still yield something valid.
-  const picked = await source.pick({ exclude: THEMES_ALL[0].id });
-  assert.notEqual(picked.id, THEMES_ALL[0].id);
+test('a round with nobody left to vote ends instead of hanging', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  for (const p of aliveIn(g).slice(0, 3)) g.setConnected(p.id, false);
+  assert.equal(g.phase, 'reveal');
+  assert.equal(g.outcome.winner, null);
+  assert.equal(g.outcome.reason, 'abandoned');
 });
 
 // ---------------------------------------------------------------------------
-group('Theme (a material per recognised object)');
+group('Playing on');
 
-test('the class list matches what the model actually emits', () => {
-  // Verified against the real model in tools/smoke.js; this pins the ordering
-  // here so a reshuffle shows up as a failing test rather than as every
-  // object being painted as the wrong thing.
-  assert.equal(CLASS_COUNT, 21);
-  assert.equal(CLASSES[0], 'background');
-  for (const name of ['chair', 'sofa', 'tv', 'dining table', 'potted plant', 'person']) {
-    assert.ok(CLASSES.includes(name), `${name} must be detectable`);
-  }
+test('scores carry between rounds and roles are re-dealt', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+  g.submitGuess(white.id, 'wrong');
+  const scores = g.players.map((p) => p.score);
+
+  assert.ok(g.startRound('second-word').ok);
+  assert.equal(g.round, 2);
+  assert.deepEqual(g.players.map((p) => p.score), scores, 'scores were reset');
+  assert.equal(aliveIn(g).length, 4, 'everyone is back in');
+  assert.equal(g.hints.length, 0);
+  assert.equal(g.outcome, null);
 });
 
-test('an object without its own material falls through to the room', () => {
-  const theme = makeTheme({
-    base: { ramp: ['#000000', '#333333', '#888888', '#ffffff'] },
-    objects: { tv: { ramp: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'] } },
-  });
-  assert.equal(styleForClass(theme, 'tv').ramp[0][0], 1, 'tv uses its own material');
-  assert.equal(styleForClass(theme, 'sofa'), theme.base, 'sofa falls back to the base');
-  // A cow in a living room is a misdetection; the quietest thing it can do is
-  // look like the wall behind it.
-  assert.equal(styleForClass(theme, 'cow'), theme.base);
+test('a round cannot be dealt on top of one already running', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  assert.ok(!g.startRound('another').ok);
 });
 
-test('object names the model cannot detect are dropped, not stored', () => {
-  const theme = makeTheme({ base: {}, objects: { spaceship: { chroma: 1 }, TV: { chroma: 0.5 } } });
-  assert.ok(!('spaceship' in theme.objects), 'undetectable class rejected');
-  assert.ok('tv' in theme.objects, 'case is normalised');
-});
+test('a player who sat one round out is dealt into the next', () => {
+  const g = table(4);
+  g.startRound(WORD);
+  g.addPlayer({ id: 'late', name: 'Late' });
+  playHints(g);
+  const white = whitesIn(g)[0];
+  allVote(g, (p) => (p.id === white.id ? aliveIn(g)[0].id : white.id));
+  g.submitGuess(white.id, 'wrong');
 
-test('themeStyleTable yields one material per class, in model order', () => {
-  const theme = makeTheme({ base: {}, objects: { sofa: { chroma: 0.9 } } });
-  const table = themeStyleTable(theme);
-  assert.equal(table.length, CLASS_COUNT);
-  assert.equal(table[0], theme.base, 'class 0 is the room itself');
-  near(table[CLASSES.indexOf('sofa')].chroma, 0.9, 1e-6);
-});
-
-test('a malformed theme still renders something', () => {
-  for (const junk of [null, 42, 'hello', { objects: 'nope' }, { base: 'nope' }]) {
-    const t = makeTheme(junk);
-    assert.equal(t.base.ramp.length, 4);
-    assert.equal(typeof t.objects, 'object');
-  }
-});
-
-test('lerpTheme blends objects against the other theme base when only one has them', () => {
-  const a = makeTheme({
-    id: 'a', base: { chroma: 0 }, objects: { tv: { chroma: 1 } },
-  });
-  const b = makeTheme({ id: 'b', base: { chroma: 0 } });
-  const mid = lerpTheme(a, b, 0.5);
-  // b has no tv, so a's tv fades toward b's *base*, not toward nothing.
-  near(mid.objects.tv.chroma, 0.5, 1e-6);
-});
-
-test('every shipped theme gives its objects genuinely different materials', () => {
-  // The entire point. If an object's material matched the base, that object
-  // would be indistinguishable from the wall behind it and this would be a
-  // colour filter again.
-  for (const theme of THEMES_ALL) {
-    const names = Object.keys(theme.objects);
-    assert.ok(names.length >= 2, `${theme.id} styles too few objects (${names.length})`);
-    for (const name of names) {
-      const style = theme.objects[name];
-
-      // Distinctness has two independent routes, and a theme may use either.
-      // Fill: how differently the same mid-grey comes out.
-      const midBase = restyleColorCPU([0.5, 0.5, 0.5], theme.base);
-      const midObj = restyleColorCPU([0.5, 0.5, 0.5], style);
-      const fill = midBase.reduce((sum, c, i) => sum + Math.abs(c - midObj[i]), 0);
-
-      // Outline: a dark room with cyan edges and a dark sofa with magenta
-      // edges read as clearly different objects even though their fills are
-      // nearly identical — so edge *colour*, weighted by how strongly each
-      // draws it, counts too. Ignoring this is what made an earlier version
-      // of this test flag a sofa that is in fact obviously distinct.
-      const edgeWeight = Math.min(theme.base.edgeStrength, style.edgeStrength);
-      const edge = theme.base.edgeColor.reduce(
-        (sum, c, i) => sum + Math.abs(c - style.edgeColor[i]), 0,
-      ) * edgeWeight + Math.abs(theme.base.edgeStrength - style.edgeStrength);
-
-      assert.ok(
-        fill + edge > 0.25,
-        `${theme.id}/${name} is nearly identical to the room `
-        + `(fill ${fill.toFixed(3)}, edge ${edge.toFixed(3)})`,
-      );
-
-      // Edges alone are not enough, though, and this is the floor that says
-      // so. Outlines are drawn from detail in the image, so they appear at an
-      // object's silhouette and its creases and nowhere else — across the
-      // broad flat middle of a sofa there is no detail to draw, and all that
-      // shows is the fill. A theme that separates its objects with trim only
-      // therefore still looks like one tinted room wherever it matters most.
-      assert.ok(
-        fill > 0.2,
-        `${theme.id}/${name} fills the same as the room and leans on trim to `
-        + `tell them apart (fill ${fill.toFixed(3)}) — flat surfaces will read `
-        + 'as wall',
-      );
-    }
-  }
-});
-
-// ---------------------------------------------------------------------------
-group('ClassAtlas (per-class materials as lookup textures)');
-
-test('the ramp atlas holds one row per class, spanning that class ramp', () => {
-  const theme = makeTheme({
-    base: { ramp: ['#000000', '#000000', '#000000', '#000000'] },
-    objects: { tv: { ramp: ['#ffffff', '#ffffff', '#ffffff', '#ffffff'] } },
-  });
-  const atlas = new ClassAtlas().update(theme);
-  const data = atlas.rampTexture.image.data;
-  const rowStart = (c) => c * RAMP_WIDTH * 4;
-
-  assert.equal(data[rowStart(0)], 0, 'background row is black');
-  assert.equal(data[rowStart(CLASSES.indexOf('tv'))], 255, 'tv row is white');
-  // A class with no override must be byte-identical to the base row, or it
-  // would render as a subtly different material for no reason.
-  const sofaRow = rowStart(CLASSES.indexOf('sofa'));
-  for (let i = 0; i < RAMP_WIDTH * 4; i++) {
-    assert.equal(data[sofaRow + i], data[rowStart(0) + i], `sofa row byte ${i}`);
-  }
-  atlas.dispose();
-});
-
-test('the ramp atlas interpolates across a row the way the shader reads it', () => {
-  const atlas = new ClassAtlas().update(makeTheme({
-    base: { ramp: ['#000000', '#555555', '#aaaaaa', '#ffffff'] },
-  }));
-  const data = atlas.rampTexture.image.data;
-  assert.equal(data[0], 0, 'darkest end');
-  assert.equal(data[(RAMP_WIDTH - 1) * 4], 255, 'brightest end');
-  // Monotonic across the row: this is the shading that keeps objects readable.
-  for (let x = 1; x < RAMP_WIDTH; x++) {
-    assert.ok(data[x * 4] >= data[(x - 1) * 4], `ramp dips at ${x}`);
-  }
-  atlas.dispose();
-});
-
-test('packed parameters survive the round trip the shader decodes', () => {
-  const theme = makeTheme({
-    base: {
-      chroma: 0.4, contrast: 1.5, textureStrength: 0.25, edgeStrength: 0.8,
-      texture: 'veins', textureScale: 200, sheen: 0.75,
-      edgeColor: '#ff0000', sheenColor: '#0000ff',
-    },
-  });
-  const atlas = new ClassAtlas().update(theme);
-  const d = atlas.paramTexture.image.data;
-  const at = (texel, ch) => d[texel * 4 + ch];
-
-  near(at(0, 0) / 255, 0.4, 0.01, 'chroma');
-  near((at(0, 1) / 255) * 3, 1.5, 0.02, 'contrast');
-  near(at(0, 2) / 255, 0.25, 0.01, 'textureStrength');
-  near(at(0, 3) / 255, 0.8, 0.01, 'edgeStrength');
-  // The texture enum is stored raw, so it must come back as an exact integer —
-  // a rounding slip here selects a different pattern entirely.
-  assert.equal(at(1, 0), TEXTURES.veins);
-  near((at(1, 1) / 255) * 400, 200, 2, 'textureScale');
-  near((at(1, 2) / 255) * 1.5, 0.75, 0.01, 'sheen');
-  assert.equal(at(2, 0), 255, 'edgeColor red');
-  assert.equal(at(3, 2), 255, 'sheenColor blue');
-  atlas.dispose();
-});
-
-test('the atlas covers every class, so no index can sample uninitialised memory', () => {
-  const atlas = new ClassAtlas().update(makeTheme({ base: { ramp: ['#102030', '#405060', '#708090', '#a0b0c0'] } }));
-  assert.equal(atlas.rampTexture.image.data.length, RAMP_WIDTH * CLASS_COUNT * 4);
-  assert.equal(atlas.paramTexture.image.data.length, PARAM_TEXELS * CLASS_COUNT * 4);
-  // Alpha is written for every texel; a zero would mean a row was skipped.
-  for (let c = 0; c < CLASS_COUNT; c++) {
-    assert.equal(atlas.rampTexture.image.data[c * RAMP_WIDTH * 4 + 3], 255, `class ${c} row written`);
-  }
-  atlas.dispose();
-});
-
-// ---------------------------------------------------------------------------
-group('ClaudeStylist (parsing what a model actually sends back)');
-
-const wrap = (text) => ({ content: [{ type: 'text', text }] });
-
-test('extractStyle reads a bare JSON reply', () => {
-  const s = extractStyle(wrap('{"id":"ice","chroma":0.1}'));
-  assert.equal(s.id, 'ice');
-});
-
-test('extractStyle survives a code fence or surrounding prose', () => {
-  assert.equal(extractStyle(wrap('```json\n{"id":"jade"}\n```')).id, 'jade');
-  assert.equal(extractStyle(wrap('Here you go:\n{"id":"bone"}\nHope that helps.')).id, 'bone');
-});
-
-test('extractStyle reports a reply with no style rather than returning junk', () => {
-  assert.throws(() => extractStyle(wrap('I would rather not.')));
-  assert.throws(() => extractStyle({ content: [] }));
-});
-
-test('a Claude-shaped reply flows through makeStyle into something renderable', () => {
-  // The end-to-end contract: whatever comes back is validated by exactly the
-  // same path a preset is, so the renderer cannot tell them apart.
-  const raw = extractStyle(wrap(JSON.stringify({
-    id: 'volcanic', name: 'Cooled Lava', blurb: 'Still warm underfoot.',
-    ramp: ['#0a0503', '#3d1e12', '#8a3c1c', '#e8b27a'],
-    chroma: 0.09, contrast: 1.3, texture: 'hammered', textureScale: 80,
-    textureStrength: 0.25, edgeStrength: 0.3, edgeColor: '#050202',
-    sheen: 0.2, sheenColor: '#ffd8a8',
-  })));
-  const style = makeStyle(raw);
-  assert.equal(style.texture, 'hammered');
-  assert.equal(style.ramp.length, 4);
-  const out = restyleColorCPU([0.5, 0.5, 0.5], style);
-  for (const c of out) assert.ok(c >= 0 && c <= 1);
+  g.startRound('second-word');
+  assert.equal(g.playerById('late').playing, true);
+  assert.ok(g.order.includes('late'));
 });
 
 // ---------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
-if (failed) {
-  console.log('\nFailures:');
-  for (const f of failures) console.log(`\n  ${f.name}\n  ${f.err.stack}`);
-  process.exit(1);
-}
+process.exit(failed ? 1 : 0);

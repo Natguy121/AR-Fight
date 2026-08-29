@@ -1,504 +1,426 @@
-#!/usr/bin/env node
-/**
- * Boots the real page in headless Chromium and drives it with a fake camera.
- *
- * `npm test` covers the maths but cannot touch WebGL, canvas text, or the DOM
- * wiring — and a shader that fails to compile is invisible until the page is
- * black on a phone. This runs the actual application: it compiles the
- * passthrough, restyle and distortion shaders, renders frames, and exercises
- * transform / change / off.
- *
- *   npm run smoke              # headless
- *   npm run smoke -- --shots   # also write PNGs to tools/shots/
- */
-
-import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import path from 'node:path';
 import fs from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
-const PORT = 8791;
-const BASE = `http://127.0.0.1:${PORT}`;
+/**
+ * Four browsers, one table, a whole game.
+ *
+ * The unit tests prove the rules; this proves the parts fit together — that a
+ * hint typed on one phone appears on the other three, that a vote resolves,
+ * that the reveal says what it should.
+ *
+ * And it proves the one thing that cannot be proved anywhere else: it records
+ * every WebSocket frame each browser actually receives, and checks that the
+ * secret word never appears in any frame sent to Mr. White. Not hidden in the
+ * page — never delivered. A DOM check would only show that the interface does
+ * not display it, which is a very different and much weaker claim.
+ */
+
+const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SHOTS = process.argv.includes('--shots');
-const SHOT_DIR = path.join(__dirname, 'shots');
+const SHOT_DIR = path.join(ROOT, 'tools', 'shots');
+const PORT = 3400 + Math.floor(Math.random() * 300);
+const BASE = `http://127.0.0.1:${PORT}`;
+const NAMES = ['Ana', 'Ben', 'Cleo', 'Dev'];
 
 let failures = 0;
-const check = (ok, label, detail = '') => {
+function check(ok, label, detail = '') {
   if (ok) {
     console.log(`  ok    ${label}`);
   } else {
-    failures++;
-    console.log(`  FAIL  ${label}${detail ? `\n        ${detail}` : ''}`);
+    failures += 1;
+    console.log(`  FAIL  ${label}`);
+    if (detail) console.log(`        ${detail}`);
   }
-};
-
-/**
- * Locate a Chromium build. Prefers whatever Playwright resolves on its own,
- * falling back to a scan of PLAYWRIGHT_BROWSERS_PATH for environments that
- * ship a pre-installed browser under a versioned directory.
- */
-function findChromium() {
-  try {
-    const resolved = chromium.executablePath();
-    if (resolved && fs.existsSync(resolved)) return resolved;
-  } catch {
-    /* not installed through playwright's own download */
-  }
-  const base = process.env.PLAYWRIGHT_BROWSERS_PATH || '/opt/pw-browsers';
-  if (fs.existsSync(base)) {
-    const candidates = fs
-      .readdirSync(base)
-      // headless_shell has no WebGL, so it cannot verify shaders.
-      .filter((d) => d.startsWith('chromium') && !d.includes('headless_shell'))
-      .sort()
-      .reverse()
-      .map((d) => path.join(base, d, 'chrome-linux', 'chrome'));
-    for (const c of candidates) if (fs.existsSync(c)) return c;
-  }
-  throw new Error(`No Chromium found (looked under ${base})`);
 }
 
-async function waitForServer(url, timeoutMs = 15000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+async function waitForServer(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(BASE, { signal: AbortSignal.timeout(1000) });
       if (res.ok) return true;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 150));
+    } catch { /* not up yet */ }
+    await sleep(150);
   }
-  throw new Error(`Server never came up at ${url}`);
+  return false;
+}
+
+/** Poll a predicate rather than sleeping a guessed amount. */
+async function until(fn, what, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    last = await fn();
+    if (last) return last;
+    await sleep(80);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+const visible = (page, sel) => page.locator(sel).isVisible();
+
+/**
+ * Click something, and say what it was if it does not work.
+ *
+ * Playwright's own failure is `page.click: Timeout 30000ms exceeded` with the
+ * selector but no idea whose screen or what point in the game — which is
+ * exactly the report you cannot act on when it happens once in twenty runs.
+ *
+ * The overlay check is the substantive part. The role card is a full-screen
+ * layer, and while it is up every click beneath it waits for an element that
+ * is never going to become clickable. Asserting it is down first turns that
+ * from a silent thirty-second hang into a sentence naming the cause.
+ */
+async function click(player, selector, label) {
+  const blocked = await visible(player.page, '#reveal-card');
+  if (blocked && !selector.startsWith('#role')) {
+    throw new Error(`${label}: ${player.name}'s role card is still covering the screen`);
+  }
+  try {
+    await player.page.click(selector, { timeout: 8000 });
+  } catch (err) {
+    throw new Error(`${label}: could not click ${selector} on ${player.name}'s screen `
+      + `(phase panels: ${await phasesOf(player.page)}) — ${err.message.split('\n')[0]}`);
+  }
+}
+
+/**
+ * Dismiss the role card, and make sure it actually went.
+ *
+ * Clicking and hoping is what makes this test flaky under load: the card is a
+ * full-screen overlay, so if the dismissal does not take, every later click on
+ * that page waits on an element that will never be reachable, and the test
+ * fails thirty seconds later somewhere entirely unrelated.
+ */
+async function putCardAway(player) {
+  await click(player, '#role-ok', 'putting the role card away');
+  await until(
+    async () => !await visible(player.page, '#reveal-card'),
+    `${player.name}'s role card to close`,
+    5000,
+  );
+}
+
+/** Which panels a page is showing, for a failure message worth reading. */
+async function phasesOf(page) {
+  const names = ['lobby', 'hint', 'vote', 'guess', 'reveal'];
+  const shown = [];
+  for (const n of names) if (await visible(page, `#panel-${n}`)) shown.push(n);
+  if (await visible(page, '#reveal-card')) shown.push('role-card');
+  return shown.join('+') || 'none';
+}
+
+/**
+ * Launch the browser Playwright downloaded, or whatever browser is already on
+ * the machine.
+ *
+ * Playwright pins an exact Chromium build per release and refuses anything
+ * else, which is right for it and unhelpful here: plenty of environments ship
+ * a perfectly good Chromium at a fixed path and no way to download another
+ * one. So: try the normal way first, and only if that fails fall back to a
+ * browser already present. Nothing about this test depends on the exact
+ * build.
+ */
+async function launchChromium(chromium) {
+  try {
+    return await chromium.launch();
+  } catch (err) {
+    const candidates = [
+      process.env.CHROMIUM_PATH,
+      '/opt/pw-browsers/chromium',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/google-chrome',
+    ].filter(Boolean);
+    for (const executablePath of candidates) {
+      if (!fs.existsSync(executablePath)) continue;
+      console.log(`  note  using the browser already installed at ${executablePath}`);
+      return chromium.launch({ executablePath });
+    }
+    throw err;
+  }
 }
 
 async function main() {
-  // Plain HTTP on loopback: a secure context, so getUserMedia is allowed.
-  const server = spawn(
-    process.execPath,
-    [path.join(__dirname, 'serve.js'), '--http', '--port', String(PORT)],
-    { cwd: ROOT, stdio: 'ignore' },
-  );
-
-  let browser;
+  let chromium;
   try {
-    await waitForServer(BASE);
+    ({ chromium } = await import('playwright'));
+  } catch {
+    console.log('\nplaywright is not installed — skipping the browser smoke test.');
+    console.log('install it with:  npm install\n');
+    return;
+  }
 
-    browser = await chromium.launch({
-      // Full Chromium, not headless_shell: the shell has no WebGL.
-      executablePath: findChromium(),
-      args: [
-        // A synthetic moving test pattern stands in for the rear camera.
-        '--use-fake-device-for-media-stream',
-        '--use-fake-ui-for-media-stream',
-        '--autoplay-policy=no-user-gesture-required',
-        // SwiftShader gives a real GL implementation with no GPU present, so
-        // shaders genuinely compile rather than being skipped.
-        '--use-gl=swiftshader',
-        '--enable-unsafe-swiftshader',
-        '--ignore-gpu-blocklist',
-      ],
-    });
+  const server = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
+    env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const serverErrors = [];
+  server.stderr.on('data', (b) => serverErrors.push(b.toString()));
 
-    const context = await browser.newContext({
-      viewport: { width: 900, height: 450 },
-      permissions: ['camera'],
-      deviceScaleFactor: 1,
-    });
-    const page = await context.newPage();
+  if (!await waitForServer()) {
+    server.kill();
+    throw new Error(`server never came up on ${PORT}`);
+  }
 
-    const consoleErrors = [];
-    const pageErrors = [];
-    const notFound = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
-    });
-    page.on('pageerror', (err) => pageErrors.push(err.message));
-    page.on('response', (res) => {
-      if (res.status() === 404) notFound.push(new URL(res.url()).pathname);
-    });
+  const browser = await launchChromium(chromium);
+  const players = [];
 
-    // ---------------------------------------------------------------- boot
-    console.log('\nBoot');
-    await page.goto(BASE, { waitUntil: 'load' });
-    check(await page.locator('#gate').isVisible(), 'gate screen renders');
+  try {
+    // ------------------------------------------------------------ joining
+    console.log('\nSitting down');
 
-    // Hand tracking needs a CDN this sandbox cannot reach; the pointer/gaze
-    // fallback is the path under test here anyway.
-    await page.click('#gate-start');
-    await page.waitForFunction(() => window.ARRESKIN?.running === true, null, { timeout: 45000 });
-    check(true, 'session starts with a fake camera');
+    for (const name of NAMES) {
+      // A separate context per player: separate storage, separate session,
+      // as unlike each other as four different phones.
+      const context = await browser.newContext({ viewport: { width: 420, height: 860 } });
+      const page = await context.newPage();
+      const frames = [];
+      const errors = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+      // Attached before navigation, so the very first frame is captured.
+      page.on('websocket', (ws) => {
+        ws.on('framereceived', ({ payload }) => frames.push(String(payload)));
+      });
+      await page.goto(BASE, { waitUntil: 'load' });
+      players.push({ name, context, page, frames, errors });
+    }
 
-    const boot = await page.evaluate(() => ({
-      stereo: window.ARRESKIN.renderer.stereo,
-      videoW: window.ARRESKIN.cameraFeed.width,
-      videoH: window.ARRESKIN.cameraFeed.height,
-      videoFlipY: window.ARRESKIN.cameraFeed.texture?.flipY,
-      texel: window.ARRESKIN.renderer.bgUniforms.uTexel.value.toArray(),
-      controlsVisible: !document.getElementById('controls').hidden,
-    }));
-    check(boot.videoW > 0 && boot.videoH > 0, 'camera reports a frame size',
-      `got ${boot.videoW}x${boot.videoH}`);
-    // BACKGROUND_FRAG's UV math assumes flipY=false (see CameraFeed) — the
-    // default (true) silently renders passthrough upside down for everyone,
-    // on every device, regardless of any rotation/mirror setting.
-    check(boot.videoFlipY === false, 'video texture has flipY disabled to match the background shader');
-    check(boot.stereo === true, 'starts in stereo headset mode');
-    check(boot.controlsVisible, 'in-session controls appear');
-    // Edge detection taps neighbouring source pixels; a stale default texel
-    // would make outlines blurry or invisible without any error.
-    check(Math.abs(boot.texel[0] - 1 / boot.videoW) < 1e-9,
-      'edge-detection texel size matches the real capture resolution',
-      `texel ${boot.texel} for ${boot.videoW}x${boot.videoH}`);
+    const [host, ...guests] = players;
 
-    // ----------------------------------------------------------- rendering
-    console.log('\nRendering');
-    await page.waitForTimeout(400);
-    const gl = await page.evaluate(() => {
-      const r = window.ARRESKIN.renderer.renderer;
-      return {
-        frames: r.info.render.frame,
-        calls: r.info.render.calls,
-        programs: r.info.programs?.length ?? 0,
-        contextLost: r.getContext().isContextLost(),
-      };
-    });
-    check(gl.frames > 0, 'render loop is producing frames', `frames=${gl.frames}`);
-    check(gl.calls > 0, 'draw calls are being issued');
-    check(!gl.contextLost, 'WebGL context is healthy');
-    // Passthrough+restyle and distortion. If the restyle GLSL fails to
-    // compile, this is where it shows up rather than as a black headset.
-    check(gl.programs >= 2, 'shader programs linked (passthrough+restyle, distortion)',
-      `programs=${gl.programs}`);
-    const shaderErrors = consoleErrors.filter((e) => /shader|glsl|program|compile/i.test(e));
-    check(shaderErrors.length === 0, 'no shader compile errors', shaderErrors.join('\n        '));
+    await host.page.fill('#entry-name', host.name);
+    await click(host, '#entry-create', 'starting a table');
+    await until(() => visible(host.page, '#panel-lobby'), 'the host to get a table');
+
+    const code = (await host.page.textContent('#lobby-code')).trim();
+    check(/^[A-Z]{4}$/.test(code), 'starting a table gives a four-letter code', code);
+
+    for (const guest of guests) {
+      await guest.page.fill('#entry-name', guest.name);
+      await guest.page.fill('#entry-code', code.toLowerCase()); // typed however
+      await click(guest, '#entry-join', `${guest.name} joining`);
+      await until(() => visible(guest.page, '#panel-lobby'), `${guest.name} to sit down`);
+    }
+
+    const seen = await host.page.locator('#player-list .pname').allTextContents();
+    check(seen.length === 4 && NAMES.every((n) => seen.includes(n)),
+      'everyone appears at the table, on everyone else\'s screen', seen.join(', '));
+    check(await visible(host.page, '#lobby-host'), 'the host gets the deal button');
+    check(!await visible(guests[0].page, '#lobby-host'), 'and nobody else does');
 
     if (SHOTS) {
       fs.mkdirSync(SHOT_DIR, { recursive: true });
-      await page.screenshot({ path: path.join(SHOT_DIR, '1-untouched.png') });
+      await host.page.screenshot({ path: path.join(SHOT_DIR, '1-lobby.png') });
     }
 
-    // -------------------------------------------------------------- reskin
-    console.log('\nReskin');
-    // The room's own material now lives in row 0 of the class atlas rather
-    // than in loose uniforms, so these read it back from there.
-    const readBase = () => page.evaluate(() => {
-      const app = window.ARRESKIN;
-      const atlas = app.renderer.classAtlas;
-      const pd = atlas.paramTexture.image.data;
-      const rd = atlas.rampTexture.image.data;
-      const W = atlas.rampTexture.image.width;
-      return {
-        active: app.director.active,
-        chroma: pd[0] / 255,
-        rampDark: [rd[0], rd[1], rd[2]],
-        rampBright: [rd[(W - 1) * 4], rd[(W - 1) * 4 + 1], rd[(W - 1) * 4 + 2]],
-      };
-    });
-
-    const before = await readBase();
-    check(before.active === false, 'starts with the room untouched');
-    // The passthrough theme is the exact identity; chroma 1 over a linear
-    // grey ramp is its signature.
-    check(Math.abs(before.chroma - 1) < 0.01, 'untouched really means untouched (chroma 1)');
-    check(before.rampDark[0] === 0 && before.rampBright[0] === 255,
-      'and its ramp is the full linear grey', JSON.stringify(before));
-
-    const transformed = await page.evaluate(async () => {
-      const app = window.ARRESKIN;
-      await app._transform({ change: false });
-      // Let the cross-fade settle so the atlas holds the final theme.
-      for (let i = 0; i < 120; i++) app.renderer.setTheme(app.director.update(1 / 60));
-      const atlas = app.renderer.classAtlas;
-      const rd = atlas.rampTexture.image.data;
-      const W = atlas.rampTexture.image.width;
-      return {
-        active: app.director.active,
-        id: app.director.target.id,
-        name: app.director.target.name,
-        chroma: atlas.paramTexture.image.data[0] / 255,
-        rampDark: [rd[0], rd[1], rd[2]],
-        rampBright: [rd[(W - 1) * 4], rd[(W - 1) * 4 + 1], rd[(W - 1) * 4 + 2]],
-        objects: Object.keys(app.director.target.objects || {}),
-      };
-    });
-    check(transformed.active === true, 'transform applies a theme', transformed.name);
-    check(transformed.chroma < 0.9, 'the shader is actually repainting, not passing through',
-      `chroma=${transformed.chroma}`);
-    check(transformed.objects.length >= 2,
-      'the theme carries a material for individual objects, not just the room',
-      transformed.objects.join(', '));
-    // The ramp must reach the atlas, or the world stays grey. It also has to
-    // keep a real dark-to-bright spread, which is what carries the shading.
-    const rampSpread = (transformed.rampBright.reduce((a, b) => a + b, 0)
-      - transformed.rampDark.reduce((a, b) => a + b, 0)) / 255;
-    check(rampSpread > 0.3, 'the colour ramp reached the shader lookup',
-      `spread=${rampSpread.toFixed(2)}`);
-
-    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '2-transformed.png') });
-
-    // --- Object awareness. This is what separates a reskinned room from a
-    // colour filter, so it is checked against a real photograph rather than
-    // the synthetic camera: a cat sitting on a sofa, which DeepLab labels as
-    // both. Skipped with a note when the model has not been vendored, since
-    // `npm run fetch-deps` is optional and a fresh clone will not have it.
-    const segAvailable = await page.evaluate(() => window.ARRESKIN.segmenter.available);
-    if (!segAvailable) {
-      console.log('  note  segmentation model absent — run `npm run fetch-deps` to cover this path');
-    } else {
-      const seg = await page.evaluate(async () => {
-        const app = window.ARRESKIN;
-        const img = new Image();
-        img.src = '/tools/fixtures/cat-on-sofa.jpg';
-        await img.decode();
-        const c = document.createElement('canvas');
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        c.getContext('2d').drawImage(img, 0, 0);
-
-        // Drive the segmenter directly: the fake camera is a flat test
-        // pattern with no objects in it, so it can never exercise this.
-        app.segmenter._lastRunMs = -Infinity;
-        const ran = app.segmenter.update(c, performance.now() + 5000, true);
-        app.renderer.setSegmentationMask(app.segmenter.maskTexture);
-        return {
-          ran,
-          detected: [...app.segmenter.detected].sort(),
-          maskSize: [app.segmenter.maskWidth, app.segmenter.maskHeight],
-          imageSize: [img.naturalWidth, img.naturalHeight],
-          hasMask: app.renderer.bgUniforms.uHasMask.value,
-        };
-      });
-      check(seg.ran === true, 'the segmenter labelled a real photograph');
-      check(seg.detected.includes('sofa'),
-        'it recognised the sofa the cat is sitting on', seg.detected.join(', '));
-      check(seg.detected.includes('cat'), 'and the cat', seg.detected.join(', '));
-      // The mask is sampled with the same uv as the video, so any mismatch
-      // here would slide every object's material off the object it belongs to.
-      check(seg.maskSize[0] === seg.imageSize[0] && seg.maskSize[1] === seg.imageSize[1],
-        'the mask is the same resolution as the frame, so it lines up',
-        `${seg.maskSize} vs ${seg.imageSize}`);
-      check(seg.hasMask === 1, 'the mask reached the shader');
-
-      // And the payoff: with that mask in place, two different classes must
-      // actually resolve to two different materials in the atlas.
-      const distinct = await page.evaluate(() => {
-        const app = window.ARRESKIN;
-        const atlas = app.renderer.classAtlas;
-        const data = atlas.rampTexture.image.data;
-        const W = atlas.rampTexture.image.width;
-        const mid = (row) => {
-          const o = (row * W + (W >> 1)) * 4;
-          return [data[o], data[o + 1], data[o + 2]];
-        };
-        const theme = app.director.target;
-        const names = Object.keys(theme.objects || {});
-        const classes = window.__CLASSES;
-        const base = mid(0);
-        const diffs = names.map((n) => {
-          const m = mid(classes.indexOf(n));
-          return [n, Math.abs(m[0] - base[0]) + Math.abs(m[1] - base[1]) + Math.abs(m[2] - base[2])];
-        });
-        return { themeName: theme.name, diffs };
-      });
-      // This is a check on the *plumbing* — that each class ended up with its
-      // own row and the rows are not all copies of row 0. Whether the themes
-      // are well designed is settled deterministically over every theme by
-      // `npm test`; here only one randomly chosen theme is loaded, so the bar
-      // is set well below that test's floor to stay honest about what it can
-      // actually prove.
-      const weakest = distinct.diffs.reduce((lo, d) => (d[1] < lo[1] ? d : lo), ['none', Infinity]);
-      check(distinct.diffs.length > 0 && weakest[1] > 20,
-        'each recognised object gets its own row in the atlas, not a copy of the room',
-        `${distinct.themeName}: weakest is ${weakest[0]} at ${weakest[1]}`);
+    // -------------------------------------------------------- the deal
+    console.log('\nThe deal');
+    await click(host, '#btn-start', 'dealing the first round');
+    for (const p of players) {
+      await until(() => visible(p.page, '#reveal-card'), `${p.name}'s role card`);
     }
+    check(true, 'everyone is dealt a role card, face down');
 
-    // --- The guarantee the whole design is built around: looking around must
-    // never re-decide the material. Simulated here by driving the head through
-    // a full rotation over hundreds of frames, exactly as turning away and
-    // back would, and confirming nothing about the style moved.
-    const afterLooking = await page.evaluate(async (expectedId) => {
-      const app = window.ARRESKIN;
-      const Quat = app.head.quaternion.constructor;
-      const Vec3 = app.head.position.constructor;
-      const axis = new Vec3(0, 1, 0);
-      for (let i = 0; i < 600; i++) {
-        // Sweep a full turn and back, the way a wearer would look around.
-        app.head.quaternion.copy(new Quat().setFromAxisAngle(axis, (i / 600) * Math.PI * 2));
-        app.director.update(1 / 60);
-      }
-      return { id: app.director.target.id, active: app.director.active, pending: app.director.pending };
-    }, transformed.id);
-    check(afterLooking.id === transformed.id,
-      'looking all the way around does not change the material',
-      `${transformed.id} -> ${afterLooking.id}`);
-    check(afterLooking.active === true, 'and it is still applied');
+    if (SHOTS) await host.page.screenshot({ path: path.join(SHOT_DIR, '2-role-facedown.png') });
 
-    const changed = await page.evaluate(async () => {
-      const app = window.ARRESKIN;
-      await app._transform({ change: true });
-      return { id: app.director.target.id };
-    });
-    check(changed.id !== transformed.id, 'change picks a different material',
-      `${transformed.id} -> ${changed.id}`);
+    // Turn each card over and read it.
+    for (const p of players) {
+      await click(p, '#role-card', 'turning the role card over');
+      await until(() => visible(p.page, '#role-shown'), `${p.name}'s role`);
+      p.role = (await p.page.textContent('#role-word')).trim();
+    }
+    if (SHOTS) await host.page.screenshot({ path: path.join(SHOT_DIR, '3-role-shown.png') });
+    for (const p of players) await putCardAway(p);
 
-    await page.evaluate(() => {
-      const app = window.ARRESKIN;
-      app._onButton('off');
-      for (let i = 0; i < 120; i++) app.renderer.setTheme(app.director.update(1 / 60));
-    });
-    const off = await readBase();
-    check(off.active === false, 'off returns to the untouched room');
-    check(Math.abs(off.chroma - 1) < 0.01, 'and restores exact passthrough', `chroma=${off.chroma}`);
+    const whites = players.filter((p) => p.role === 'Mr. White');
+    const civilians = players.filter((p) => p.role !== 'Mr. White');
+    check(whites.length === 1, 'exactly one player is Mr. White', `got ${whites.length}`);
 
-    // --- The choice has to outlive a reload, or every glance at the phone
-    // resets the room. Re-apply, reload the page, and check it comes back.
-    const remembered = await page.evaluate(async () => {
-      const app = window.ARRESKIN;
-      await app._transform({ change: false });
-      return { id: app.director.target.id };
-    });
-    await page.reload({ waitUntil: 'load' });
-    const restored = await page.evaluate(() => ({
-      active: window.ARRESKIN.director.active,
-      id: window.ARRESKIN.director.target.id,
-    }));
-    check(restored.active === true && restored.id === remembered.id,
-      'the material survives a reload',
-      `${remembered.id} -> ${restored.id} (active=${restored.active})`);
+    const word = civilians[0].role;
+    check(civilians.every((p) => p.role === word),
+      'every civilian was dealt the same word', civilians.map((p) => p.role).join(' / '));
+    check(/^[a-z-]+$/.test(word), 'and it is a real word from the list', word);
 
-    // Back into a live session for the robustness checks below.
-    await page.click('#gate-start');
-    await page.waitForFunction(() => window.ARRESKIN?.running === true, null, { timeout: 45000 });
+    const white = whites[0];
 
-    // ---------------------------------------------------------- robustness
-    console.log('\nRobustness');
-    await page.click('#btn-stereo');
-    check(await page.evaluate(() => window.ARRESKIN.renderer.stereo === false), 'stereo toggles off');
-    check(await page.locator('#status').isVisible(), 'status line appears in mono mode');
+    // ------------------------------------------- the property that matters
+    console.log('\nWhat Mr. White is told');
 
-    await page.setViewportSize({ width: 420, height: 720 });
-    await page.waitForTimeout(250);
-    check(await page.locator('#rotate-gate').isVisible(), 'rotate gate appears when held upright');
-    await page.setViewportSize({ width: 900, height: 450 });
-    await page.waitForTimeout(250);
-    check(await page.locator('#rotate-gate').isHidden(), 'rotate gate clears once landscape again');
+    const whiteTraffic = white.frames.join('\n').toLowerCase();
+    check(!whiteTraffic.includes(word.toLowerCase()),
+      'the word is never sent to Mr. White — not in any frame, on any message',
+      `"${word}" found in ${white.name}'s traffic`);
+    check(whiteTraffic.length > 0, 'and the check is looking at real traffic',
+      `${white.frames.length} frames captured`);
+    check(civilians.every((p) => p.frames.join('').toLowerCase().includes(word.toLowerCase())),
+      'while the civilians were sent it, so the check can tell the difference');
 
-    const afterResize = await page.evaluate(() => ({
-      frames: window.ARRESKIN.renderer.renderer.info.render.frame,
-      contextLost: window.ARRESKIN.renderer.renderer.getContext().isContextLost(),
-    }));
-    check(!afterResize.contextLost, 'context survived the resize');
+    const whitePage = await white.page.content();
+    check(!whitePage.toLowerCase().includes(word.toLowerCase()),
+      'and it is nowhere in their page either');
 
-    // --- The manual "camera looks sideways" fix, and the separate mirror
-    // toggle: rotation alone is a proper-rotation-only fix, so no number of
-    // 90° turns can undo a reflected feed.
-    const rotate = await page.evaluate(() => {
-      const app = window.ARRESKIN;
-      const btn = document.getElementById('btn-fliprot');
-      const before = app.videoRotation;
-      const labelBefore = btn.textContent;
-      btn.click();
-      return {
-        before,
-        after: app.videoRotation,
-        manual: app._videoRotationManual,
-        frameMapRotation: app.frameMap.rotation,
-        shaderUniform: app.renderer.bgUniforms.uVideoRotation.value,
-        labelBefore,
-        labelAfter: btn.textContent,
-      };
-    });
-    check(rotate.after === (rotate.before + 1) % 4, 'tapping the flip button advances one turn');
-    check(rotate.manual === true, 'tapping marks the choice as manual');
-    check(rotate.frameMapRotation === rotate.after && rotate.shaderUniform === rotate.after,
-      'rotation reaches both the frame map and the shader');
-    check(rotate.labelAfter === `${rotate.after * 90}°`, 'flip button label reflects the rotation',
-      rotate.labelAfter);
+    // ------------------------------------------------------------- hints
+    console.log('\nGiving hints');
 
-    const mirror = await page.evaluate(() => {
-      const app = window.ARRESKIN;
-      const btn = document.getElementById('btn-mirror');
-      const before = app.frameMap.mirrorX;
-      btn.click();
-      return {
-        before,
-        after: app.frameMap.mirrorX,
-        uniform: app.renderer.bgUniforms.uMirror.value,
-        onClass: btn.classList.contains('on'),
-      };
-    });
-    check(mirror.after === !mirror.before, 'mirror toggles');
-    check(mirror.uniform === (mirror.after ? 1 : 0), 'mirror reaches the shader');
-    check(mirror.onClass === mirror.after, 'mirror button shows its state');
+    const firstSpeaker = players.find(async (p) => visible(p.page, '#hint-turn'));
+    check(Boolean(firstSpeaker), 'someone is on the clock');
 
-    // On some browsers `screen.orientation.lock()` resolves without firing the
-    // 'change' event HeadTracker's angle compensation refreshes from, leaving
-    // it stuck on a portrait angle after the page went landscape — every
-    // world-space panel then renders visibly rolled. A resize is the
-    // independent, always-fires signal it self-corrects from.
-    const screenAngleFix = await page.evaluate(() => {
-      const head = window.ARRESKIN.head;
-      Object.defineProperty(screen.orientation, 'angle', { value: 0, configurable: true });
-      const isLandscape = window.innerWidth > window.innerHeight;
-      head.refreshScreenAngle();
-      return { angleDeg: (head._screenAngle * 180) / Math.PI, isLandscape };
-    });
-    check(!screenAngleFix.isLandscape || screenAngleFix.angleDeg === 90,
-      'head-tracking angle self-corrects when stuck at a portrait value',
-      `landscape=${screenAngleFix.isLandscape}, angle=${screenAngleFix.angleDeg}`);
-
-    // The fullscreen+orientation-lock attempt must never break the session —
-    // headless Chromium, and all of iOS Safari, reject it outright.
-    const forceLandscape = await page.evaluate(async () => {
-      const app = window.ARRESKIN;
-      let threw = null;
-      try {
-        await app._tryForceLandscape();
-      } catch (e) {
-        threw = String(e);
-      }
-      return { threw, running: app.running };
-    });
-    check(forceLandscape.threw === null, 'force-landscape never throws to its caller',
-      forceLandscape.threw || '');
-    check(forceLandscape.running === true, 'session is unaffected whether or not it succeeded');
-
-    if (SHOTS) await page.screenshot({ path: path.join(SHOT_DIR, '3-mono.png') });
-
-    // -------------------------------------------------------------- console
-    console.log('\nConsole');
-    check(pageErrors.length === 0, 'no uncaught exceptions', pageErrors.join('\n        '));
-
-    // Probes for the optional local MediaPipe copy are *meant* to 404 when
-    // fetch-deps has not been run; a 404 on anything else is a broken path.
-    const expected404 = /^\/(vendor\/mediapipe\/|models\/(hand_landmarker\.task|deeplab_v3\.tflite)|favicon\.ico)/;
-    const unexpected404 = [...new Set(notFound)].filter((p) => !expected404.test(p));
-    check(unexpected404.length === 0, 'every first-party asset resolves', unexpected404.join(', '));
-
-    const realErrors = consoleErrors.filter(
-      (e) => !/mediapipe|jsdelivr|Failed to fetch|net::ERR|hand tracking|404 \(Not Found\)/i.test(e),
+    // The first speaker is guaranteed to be a civilian, so their rejections
+    // are the ones worth checking: a refused hint has to come back as
+    // something visible they can act on, not vanish into a dead button.
+    const first = await until(
+      async () => {
+        for (const p of players) if (await visible(p.page, '#hint-turn')) return p;
+        return null;
+      },
+      'the first speaker',
     );
-    check(realErrors.length === 0, 'no unexpected console errors', realErrors.join('\n        '));
+    check(first.role !== 'Mr. White',
+      'the first speaker is never Mr. White — that seat has nothing to go on');
 
-    if (notFound.length) {
-      console.log(`  note  optional assets absent (expected): ${[...new Set(notFound)].join(', ')}`);
+    if (SHOTS) await first.page.screenshot({ path: path.join(SHOT_DIR, '4-hints.png') });
+
+    await first.page.fill('#hint-input', 'two words');
+    await click(first, '#hint-send', 'sending a two-word hint');
+    await until(() => visible(first.page, '#hint-error'), 'the two-word rejection');
+    check(/one word/i.test(await first.page.textContent('#hint-error')),
+      'a hint of two words is refused, and says why');
+
+    await first.page.fill('#hint-input', word);
+    await click(first, '#hint-send', 'sending the secret word as a hint');
+    await until(
+      async () => /cannot say the word/i.test(await first.page.textContent('#hint-error')),
+      'the secret-word rejection',
+    );
+    check(true, 'and a civilian cannot simply say the secret word');
+    check(await visible(first.page, '#hint-turn'),
+      'a refused hint leaves it still their turn, not skipped');
+
+    let spoken = 0;
+    await until(async () => {
+      for (const p of players) {
+        if (!await visible(p.page, '#hint-turn')) continue;
+        if (p === white) {
+          check(true, 'Mr. White has to say something too, with nothing to go on');
+        }
+        await p.page.fill('#hint-input', `clue${spoken++}`);
+        await click(p, '#hint-send', `${p.name} giving a hint`);
+        await sleep(120);
+      }
+      return visible(players[0].page, '#panel-vote');
+    }, 'the hints to go round', 20000);
+
+    check(spoken === 4, 'each of the four said one word', `${spoken} hints`);
+    const logged = await guests[0].page.locator('#hint-log .hint-row .what').allTextContents();
+    check(logged.length === 4, 'and all four are on everyone\'s screen', logged.join(', '));
+    check(!logged.includes(word), 'and the word itself never made it into the log');
+
+    // -------------------------------------------------------------- vote
+    console.log('\nThe vote');
+
+    // Every screen, not just one: the hint loop ends as soon as the *first*
+    // page shows the ballot, and clicking a vote on a page still catching up
+    // is the sort of race that only shows up on a loaded machine.
+    for (const p of players) {
+      await until(() => visible(p.page, '#panel-vote'), `${p.name}'s ballot`);
     }
-    // Which MediaPipe path this run actually took. Worth stating plainly: with
-    // the vendored copy present these checks cover real inference, and without
-    // it they cover the fallbacks instead — two quite different runs.
-    const mp = await page.evaluate(() => ({
-      hands: window.ARRESKIN.handTracker.available,
-      seg: window.ARRESKIN.segmenter.available,
-    }));
-    console.log(`  note  hand tracking ${mp.hands ? 'loaded' : 'unavailable — pointer/gaze fallback exercised'}`);
-    console.log(`  note  segmentation ${mp.seg ? 'loaded — object recognition covered' : 'unavailable — whole-room fallback exercised'}`);
+    check(true, 'the vote opens for everyone');
+
+    // Everyone votes for Mr. White; Mr. White has to put theirs elsewhere.
+    for (const p of players) {
+      const target = p === white ? civilians[0].name : white.name;
+      await click(p, `.vote-option:has-text("${target}")`, `${p.name} voting for ${target}`);
+      await sleep(100);
+    }
+
+    await until(() => visible(white.page, '#guess-mine'), 'Mr. White to be caught', 8000);
+    check(true, 'the most-voted player is caught, and it is Mr. White');
+    check(await visible(civilians[0].page, '#guess-theirs'),
+      'everyone else is told they are guessing');
+
+    const stillHidden = white.frames.join('\n').toLowerCase();
+    check(!stillHidden.includes(word.toLowerCase()),
+      'being caught still does not tell them the word — that is the whole point');
+
+    if (SHOTS) await white.page.screenshot({ path: path.join(SHOT_DIR, '6-caught.png') });
+
+    // ------------------------------------------------------------- guess
+    console.log('\nThe guess');
+
+    await white.page.fill('#guess-input', 'definitely-not-it');
+    await click(white, '#guess-send', 'Mr. White sending their guess');
+    for (const p of players) {
+      await until(() => visible(p.page, '#panel-reveal'), `${p.name}'s reveal`, 8000);
+    }
+
+    const verdict = await host.page.textContent('#reveal-verdict');
+    check(/table wins/i.test(verdict), 'a wrong guess hands it to the table', verdict.trim());
+    check((await host.page.textContent('#reveal-word')).trim() === word,
+      'the word is shown at last');
+    const whiteSees = (await white.page.textContent('#reveal-word')).trim();
+    check(whiteSees === word,
+      'to Mr. White as well, now that it is over', `they see "${whiteSees}", word was "${word}"`);
+
+    const scores = await host.page.locator('#reveal-roles .pscore').allTextContents();
+    check(scores.filter((s) => s === '2').length === 3,
+      'three civilians score two apiece', scores.join(','));
+    check(scores.filter((s) => s === '0').length === 1, 'and Mr. White scores nothing');
+
+    if (SHOTS) await host.page.screenshot({ path: path.join(SHOT_DIR, '7-reveal.png') });
+
+    // --------------------------------------------------------- reconnect
+    console.log('\nComing back');
+
+    await white.page.reload({ waitUntil: 'load' });
+    await until(() => visible(white.page, '#panel-reveal'), 'the reloaded page to find its seat');
+    check(true, 'a reload drops back into the same seat, mid-game');
+    const backAs = await white.page.locator('#player-list .player-row.is-you .pname').textContent();
+    check(backAs.trim() === white.name, 'as the same player', backAs);
+
+    // The reload dropped a connection. If that player was the host, they must
+    // still have the buttons afterwards — losing them for locking a phone is
+    // the bug this asserts is gone.
+    await until(() => visible(host.page, '#btn-next'), 'the host to keep the deal button');
+    check(true, 'and the host still has the controls after a dropped connection');
+
+    // ------------------------------------------------------ another round
+    console.log('\nRound two');
+
+    await click(host, '#btn-next', 'dealing the second round');
+    for (const p of players) {
+      await until(() => visible(p.page, '#reveal-card'), `${p.name}'s second role card`);
+      await click(p, '#role-card', `${p.name} turning their second card over`);
+      await until(() => visible(p.page, '#role-shown'), `${p.name}'s second role`);
+      p.role2 = (await p.page.textContent('#role-word')).trim();
+      await putCardAway(p);
+    }
+    const word2 = players.find((p) => p.role2 !== 'Mr. White').role2;
+    check(word2 !== word, 'a new round brings a word the table has not had', `${word} then ${word2}`);
+    check(players.filter((p) => p.role2 === 'Mr. White').length === 1,
+      'and Mr. White is dealt again');
+
+    const white2 = players.find((p) => p.role2 === 'Mr. White');
+    const freshTraffic = white2.frames.join('\n').toLowerCase();
+    // The second word must be absent from *all* of their traffic. The first
+    // word legitimately appears, from the reveal at the end of round one.
+    check(!freshTraffic.includes(word2.toLowerCase()),
+      'and the new word is kept from whoever it is this time',
+      `"${word2}" leaked to ${white2.name}`);
+
+    // ------------------------------------------------------------ console
+    console.log('\nConsole');
+    const pageErrors = players.flatMap((p) => p.errors);
+    check(pageErrors.length === 0, 'no client-side errors', pageErrors.join('\n        '));
+    check(serverErrors.length === 0, 'no server-side errors', serverErrors.join('').slice(0, 500));
   } finally {
-    if (browser) await browser.close();
-    server.kill();
+    for (const p of players) await p.context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    server.kill('SIGTERM');
   }
 
   console.log(failures === 0 ? '\nsmoke test passed' : `\nsmoke test FAILED (${failures})`);

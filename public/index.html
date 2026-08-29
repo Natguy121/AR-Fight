@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0d1017" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Mr. White</title>
+<link rel="stylesheet" href="./styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🕵️</text></svg>" />
+</head>
+<body>
+
+<!-- ------------------------------------------------------------- entry -->
+<main id="screen-entry" class="screen">
+  <div class="card">
+    <h1 class="wordmark">Mr.&nbsp;White</h1>
+    <p class="tagline">
+      Everyone gets the same secret word. One of you gets nothing at all.
+    </p>
+
+    <label class="field">
+      <span>Your name</span>
+      <input id="entry-name" type="text" maxlength="16" autocomplete="nickname"
+             placeholder="Sam" enterkeyhint="go" />
+    </label>
+
+    <button id="entry-create" class="btn btn-primary" type="button">Start a table</button>
+
+    <div class="or"><span>or join one</span></div>
+
+    <div class="join-row">
+      <input id="entry-code" type="text" maxlength="4" autocomplete="off"
+             autocapitalize="characters" spellcheck="false"
+             placeholder="CODE" enterkeyhint="go" />
+      <button id="entry-join" class="btn" type="button">Join</button>
+    </div>
+
+    <p class="error" id="entry-error" hidden></p>
+
+    <details class="rules">
+      <summary>How it works</summary>
+      <ol>
+        <li>Everyone is shown the same secret word — except <b>Mr. White</b>, who is
+          shown nothing and does not know the word at all.</li>
+        <li>Going round in turn, each player says <b>one word</b> that hints at the
+          secret word without giving it away.</li>
+        <li>Mr. White has to invent a hint that fits, from nothing but what the
+          others have already said, and work out the word as they go.</li>
+        <li>Then everyone votes. Whoever gets the most votes is out, and their
+          role is revealed.</li>
+        <li>If Mr. White is caught they get <b>one guess at the word</b> — and if
+          they name it, they win the round anyway.</li>
+        <li>Civilians win by catching every Mr. White. Mr. White wins by
+          surviving until the table is level.</li>
+      </ol>
+      <p class="fineprint">
+        The first player to speak is never Mr. White — with no word and no hints
+        yet, that seat would be unplayable.
+      </p>
+    </details>
+  </div>
+</main>
+
+<!-- -------------------------------------------------------------- game -->
+<div id="screen-game" class="screen" hidden>
+
+  <header class="topbar">
+    <span class="brand">Mr.&nbsp;White</span>
+    <button id="btn-code" class="code-chip" type="button" title="Tap to copy the invite link">
+      <span id="room-code">····</span>
+    </button>
+    <span id="conn" class="conn" title="Connected"></span>
+  </header>
+
+  <!-- What you know. Tap to cover it if someone is looking over your shoulder. -->
+  <button id="word-chip" class="word-chip" type="button" hidden>
+    <span class="word-label" id="word-label">Your word</span>
+    <span class="word-value" id="word-value"></span>
+  </button>
+
+  <main class="stage">
+
+    <!-- ------------------------------------------------------- lobby -->
+    <section id="panel-lobby" class="panel" hidden>
+      <p class="lede">
+        Everyone opens the link and types this code.
+      </p>
+      <div class="bigcode" id="lobby-code">····</div>
+      <p class="hint-text" id="lobby-count"></p>
+
+      <div id="lobby-host" hidden>
+        <label class="field field-inline">
+          <span>Mr. Whites</span>
+          <select id="lobby-whites">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+          </select>
+        </label>
+        <button id="btn-start" class="btn btn-primary" type="button">Deal the round</button>
+      </div>
+      <p class="hint-text" id="lobby-waiting" hidden>Waiting for the host to deal…</p>
+    </section>
+
+    <!-- -------------------------------------------------------- hints -->
+    <section id="panel-hint" class="panel" hidden>
+      <p class="lede" id="hint-lede"></p>
+      <div id="hint-turn" class="turn-card" hidden>
+        <input id="hint-input" type="text" maxlength="20" autocomplete="off"
+               spellcheck="false" placeholder="one word" enterkeyhint="send" />
+        <button id="hint-send" class="btn btn-primary" type="button">Say it</button>
+      </div>
+      <p class="error" id="hint-error" hidden></p>
+      <p class="fineprint" id="hint-tip" hidden>
+        One word. Not the secret word, and nothing anyone has said already.
+      </p>
+    </section>
+
+    <!-- --------------------------------------------------------- vote -->
+    <section id="panel-vote" class="panel" hidden>
+      <p class="lede">Who is Mr. White?</p>
+      <div id="vote-list" class="vote-list"></div>
+      <p class="hint-text" id="vote-status"></p>
+    </section>
+
+    <!-- -------------------------------------------------------- guess -->
+    <section id="panel-guess" class="panel" hidden>
+      <div id="guess-mine" hidden>
+        <p class="lede">Caught. One guess — what was the word?</p>
+        <div class="turn-card">
+          <input id="guess-input" type="text" maxlength="30" autocomplete="off"
+                 spellcheck="false" placeholder="the word" enterkeyhint="send" />
+          <button id="guess-send" class="btn btn-primary" type="button">Say it</button>
+        </div>
+        <p class="fineprint">Get it right and you win the round anyway.</p>
+      </div>
+      <p class="lede" id="guess-theirs" hidden></p>
+      <p class="error" id="guess-error" hidden></p>
+    </section>
+
+    <!-- ------------------------------------------------------- reveal -->
+    <section id="panel-reveal" class="panel" hidden>
+      <p class="verdict" id="reveal-verdict"></p>
+      <p class="lede">The word was</p>
+      <div class="bigword" id="reveal-word"></div>
+      <div id="reveal-roles" class="roles"></div>
+      <button id="btn-next" class="btn btn-primary" type="button" hidden>Next round</button>
+      <p class="hint-text" id="reveal-waiting" hidden>Waiting for the host…</p>
+    </section>
+
+    <!-- What has been said. The whole game is in here. -->
+    <section id="hints-so-far" class="hints" hidden>
+      <h2>What has been said</h2>
+      <div id="hint-log"></div>
+    </section>
+
+    <section class="players">
+      <h2>At the table</h2>
+      <div id="player-list"></div>
+    </section>
+
+    <button id="btn-leave" class="btn btn-quiet" type="button">Leave the table</button>
+  </main>
+</div>
+
+<!-- The private moment: your role, shown only when you ask for it, so you can
+     angle the phone away from whoever is sitting next to you. -->
+<div id="reveal-card" class="overlay" hidden>
+  <div class="role-card" id="role-card">
+    <p class="role-round" id="role-round"></p>
+    <div id="role-hidden">
+      <p class="role-prompt">Tap to see what you are</p>
+      <div class="role-blob" aria-hidden="true">?</div>
+    </div>
+    <div id="role-shown" hidden>
+      <p class="role-kind" id="role-kind"></p>
+      <div class="role-word" id="role-word"></div>
+      <p class="role-note" id="role-note"></p>
+      <button id="role-ok" class="btn btn-primary" type="button">Ready</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<noscript>
+  <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
+  <p>This game needs JavaScript.</p></div></div>
+</noscript>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
