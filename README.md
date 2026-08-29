@@ -43,8 +43,8 @@ unfair:
 ## Running it
 
 ```sh
-git clone https://github.com/Natguy121/AR-Fight
-cd AR-Fight
+git clone https://github.com/Natguy121/MrWhite
+cd MrWhite
 npm install
 npm start
 ```
