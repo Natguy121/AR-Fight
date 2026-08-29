@@ -251,11 +251,17 @@ instead of re-implementing the rules a second time for one browser tab.
   which is also the only sane answer — being dealt in halfway through is not a
   thing that can happen at a real table either.
 - **Without an API key, AI players reason about vocabulary, not language.**
-  The category fallback (see "Playing against an AI," above) keeps hints and
-  votes on-theme far more often than a purely random bot would, but it is
-  still literal word matching — a hint that doesn't happen to share a word
-  with the category lists just won't be recognized, and there is no actual
-  understanding of what anyone said. It's a real step up from generic filler,
+  The category fallback (see "Playing against an AI," above) keeps hints
+  on-theme far more often than a purely random bot would, but it is still
+  literal word matching, not comprehension. Voting only treats a hint as
+  suspicious when it is a recognized word from a *different* category — a
+  genuine mismatch — never merely because it isn't in the word list's own
+  vocabulary, which describes almost every hint a person actually types.
+  Getting that distinction backwards once meant AI civilians voted against
+  human players by default and against other bots almost never; a caught
+  Mr. White's guess is likewise always drawn from the full word list, not
+  narrowed to a category, so it doesn't win by lucky guess more than a
+  caught player reasonably should. It's a real step up from generic filler,
   not a substitute for `ANTHROPIC_API_KEY`.
 - **Pass-and-play keeps no server, so it keeps no history.** Reloading the
   page mid-round loses that round — there's nothing to reconnect to, unlike

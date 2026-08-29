@@ -1,4 +1,4 @@
-import { CATEGORIES, WORDS, categoryOf, categoryForText, hintsFor } from '../../public/shared/game/words.js';
+import { WORDS, categoryOf, categoryForText, hintsFor } from '../../public/shared/game/words.js';
 import { isOneWord, normalize } from '../../public/shared/game/text.js';
 
 /**
@@ -130,27 +130,45 @@ function pickFallbackHint(view, usedTexts) {
 
 /**
  * Vote fallback: if a theme could be inferred (always, for a civilian; only
- * sometimes, for Mr. White), prefer whoever's most recent hint does *not*
- * match it — an off-theme hint is real, if weak, evidence. With no theme to
- * go on, or nobody off-theme, it falls back to picking anyone at random
- * rather than inventing a signal that is not there.
+ * sometimes, for Mr. White), prefer whoever's most recent hint is a *known*
+ * word from a *different* category — a real, specific mismatch, like
+ * blurting "banana" when the table is obviously talking about furniture.
+ *
+ * Crucially, this does **not** flag a hint just because it fails to match
+ * anything in the word list's own vocabulary — that describes nearly every
+ * hint a human actually types, since nobody is going to happen to say the
+ * literal word "domestic." Treating "unrecognized" the same as "off-theme"
+ * would mean the bot votes against human players by default and never
+ * against another bot, since only bots draw from this vocabulary — the
+ * opposite of reasoning about who is suspicious. Absence of a match is not
+ * evidence; only a positive mismatch is. With no theme to go on, or nobody
+ * with a positive mismatch, it falls back to picking anyone at random.
  */
 function pickFallbackVote(view, candidates) {
   const category = inferCategory(view);
   if (category) {
     const offTheme = candidates.filter((p) => {
       const last = [...view.hints].reverse().find((h) => h.playerId === p.id);
-      return last && categoryForText(last.text) !== category;
+      if (!last) return false;
+      const hintCategory = categoryForText(last.text);
+      return hintCategory !== null && hintCategory !== category;
     });
     if (offTheme.length) return offTheme[Math.floor(Math.random() * offTheme.length)].id;
   }
   return candidates[Math.floor(Math.random() * candidates.length)].id;
 }
 
-function pickFallbackGuess(view) {
-  const category = inferCategory(view);
-  const pool = category ? CATEGORIES[category].words : WORDS;
-  return pool[Math.floor(Math.random() * pool.length)];
+/**
+ * A guess is always drawn from the *full* word list, never narrowed to the
+ * inferred category. Narrowing it is tempting — "the hints were all about
+ * furniture, so guess a furniture word" — but with as few as a dozen words
+ * in some categories, that turns a genuine one-in-hundreds guess into a
+ * near coin flip, which stops being "a fallback bot occasionally gets
+ * lucky" and starts being "Mr. White wins by naming the word" far more
+ * often than a caught player reasonably should.
+ */
+function pickFallbackGuess() {
+  return WORDS[Math.floor(Math.random() * WORDS.length)];
 }
 
 /**
@@ -213,7 +231,7 @@ export async function chooseGuess(view) {
 
   const raw = await askClaude(system, user);
   const clean = raw ? normalize(raw).split(/\s+/)[0] : null;
-  return clean && isOneWord(clean) ? clean : pickFallbackGuess(view);
+  return clean && isOneWord(clean) ? clean : pickFallbackGuess();
 }
 
 export default { isConfigured, chooseHint, chooseVote, chooseGuess };

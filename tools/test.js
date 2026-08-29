@@ -794,6 +794,37 @@ await atest('without an API key, a civilian bot\'s vote favors whoever went off 
   });
 });
 
+await atest('without an API key, a civilian bot does not treat an unrecognized hint as suspicious by default', async () => {
+  await withoutApiKey(async () => {
+    // The bug this guards against: flagging "not in our curated vocabulary"
+    // as suspicious would flag nearly every hint a real person types (nobody
+    // says the literal word "domestic"), so the bot would vote against human
+    // players by default and never against another bot. Only a *positive*
+    // mismatch — a recognized word from the wrong category — should count.
+    const g = table(4);
+    g.startRound('pillow'); // "Around the house"
+    const civilian = g.players.find((p) => p.role === 'civilian');
+    const others = g.players.filter((p) => p.id !== civilian.id);
+    const [mismatched, humanLike, onTheme] = others;
+
+    while (g.phase === 'hint') {
+      const speaker = g.currentTurnId();
+      let text;
+      if (speaker === mismatched.id) text = 'submarine'; // a real transport-category word: a genuine mismatch
+      else if (speaker === humanLike?.id) text = 'snuggly'; // free text, in no category's vocabulary at all
+      else if (speaker === onTheme?.id) text = 'roomy'; // matches the true category
+      else text = 'household'; // the voter's own turn; irrelevant to their own vote
+      const res = g.submitHint(speaker, text);
+      assert.ok(res.ok, `setup hint failed for ${speaker}: ${res.error}`);
+    }
+    assert.equal(g.phase, 'vote', 'setup should reach the vote without a tie');
+
+    const targetId = await bot.chooseVote(g.viewFor(civilian.id));
+    assert.equal(targetId, mismatched.id,
+      'singled out the unrecognized human-style hint instead of the genuine category mismatch');
+  });
+});
+
 test('a Room seats an AI player with a unique, labeled name', () => {
   const room = new Room('TEST');
   const first = room.addBot();
