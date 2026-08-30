@@ -460,33 +460,37 @@ async function main() {
     // here as a viewport that resizes without ever actually turning.
     await vr.setViewportSize({ width: 400, height: 800 });
     await waitFrames(vr);
-    const stacked = await vr.evaluate(() => {
-      const c = window.__vr.cardboard;
-      return {
-        bodyClass: document.body.classList.contains('cardboard-stacked'),
-        stacked: c.stacked,
-        aspect: window.__vr.camera.aspect,
-        quadWidth: c.eyeQuads[0].geometry.parameters.width,
-        quadHeight: c.eyeQuads[0].geometry.parameters.height,
-      };
-    });
-    check(stacked.bodyClass, 'a still-portrait viewport stacks the two eyes instead of leaving them squeezed');
-    check(stacked.stacked, 'and Cardboard itself knows it is stacked, not just the page chrome');
-    check(stacked.aspect > 1, 'while the camera still renders a landscape-shaped stereo pair internally',
-      `aspect ${stacked.aspect}`);
-    check(stacked.quadWidth > stacked.quadHeight,
-      'so each eye lands in a wide destination on screen — full width, half height — not a tall sliver',
-      `quad ${stacked.quadWidth}x${stacked.quadHeight}`);
-    if (SHOTS) await vr.screenshot({ path: path.join(SHOT_DIR, 'vr-7-stacked.png') });
+    const rotated = await vr.evaluate(() => ({
+      bodyClass: document.body.classList.contains('force-rotate'),
+      trackerSign: window.__vr.cardboard.rotated,
+      aspect: window.__vr.camera.aspect,
+    }));
+    check(rotated.bodyClass, 'a still-portrait viewport gets the canvas rotated to fill it instead');
+    check(rotated.trackerSign !== 0, 'and the head tracking is told about the same turn',
+      `rotated ${rotated.trackerSign}`);
+    check(rotated.aspect > 1, 'so the camera still renders a landscape-shaped stereo pair',
+      `aspect ${rotated.aspect}`);
+
+    const flipSign = await vr.evaluate(() => window.__vr.cardboard.rotated);
+    await vr.click('#flip-cardboard');
+    await waitFrames(vr);
+    const flipped = await vr.evaluate(() => ({
+      bodyClass: document.body.classList.contains('force-rotate-flip'),
+      trackerSign: window.__vr.cardboard.rotated,
+    }));
+    check(flipped.bodyClass, 'flipping when the guessed direction is wrong turns the canvas the other way');
+    check(flipped.trackerSign === -flipSign,
+      'and takes the head tracking with it, or the two would fight each other',
+      `was ${flipSign}, now ${flipped.trackerSign}`);
 
     await vr.setViewportSize({ width: 1100, height: 760 });
     await waitFrames(vr);
     const backToNormal = await vr.evaluate(() => ({
-      bodyClass: document.body.classList.contains('cardboard-stacked'),
-      stacked: window.__vr.cardboard.stacked,
+      bodyClass: document.body.classList.contains('force-rotate'),
+      trackerSign: window.__vr.cardboard.rotated,
     }));
-    check(!backToNormal.bodyClass && !backToNormal.stacked,
-      'and stacking lifts the moment the screen turns landscape for real');
+    check(!backToNormal.bodyClass && backToNormal.trackerSign === 0,
+      'and the rotation lifts the moment the screen turns landscape for real');
 
     // Head tracking. The first reading is taken as "straight ahead" whatever
     // the compass says, so a phone that happens to be pointing south-east

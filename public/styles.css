@@ -298,14 +298,11 @@ select { width: auto; padding-right: 34px; }
 }
 #hud .btn { min-height: 40px; width: auto; padding: 0 16px; }
 
-/* The only control that survives into viewer mode, and the only place it can
-   go: the strip between the two lens views. Ordinarily that's a thin gap
-   down the middle at top-centre — the two circles are side by side and touch
-   near their own vertical centre, leaving the most clearance near the top. */
-#exit-cardboard {
+/* The only controls that survive into viewer mode, and the only place they
+   can go: the strip down the middle, between the two lens views. */
+#exit-cardboard, #flip-cardboard {
   position: fixed;
   z-index: 12;
-  top: 6px;
   left: 50%;
   transform: translateX(-50%);
   width: auto;
@@ -314,19 +311,48 @@ select { width: auto; padding-right: 34px; }
   font-size: 0.82rem;
   opacity: 0.55;
 }
+#exit-cardboard { top: 6px; }
+#flip-cardboard { top: 46px; }
+
+/* Only relevant once the canvas is being force-rotated — CSS hides it the
+   rest of the time regardless of what JS forgets to toggle. */
+body:not(.force-rotate) #flip-cardboard { display: none; }
 
 /* Nothing scrolls or rubber-bands while the phone is strapped to a face. */
 body.in-cardboard { touch-action: none; overscroll-behavior: none; }
 
-/* Stacked mode (see main.js's resize()) turns the two circles 90° from side
-   by side to one above the other — each is only as wide as the screen, so
-   unlike the side-by-side case it doesn't reach the screen's own top or
-   bottom edge, leaving a full-width band of clearance right at the seam
-   between them instead of a thin gap at the top. Exit moves there to match. */
-body.cardboard-stacked #exit-cardboard {
+/* The real viewport stayed portrait — rotation lock, most often, or iOS
+   ignoring the lock request outright — so rather than leaving two lens
+   circles each squeezed into a tall sliver, the canvas is rotated in place
+   to fill it as if the viewport really were landscape. #scene is sized to
+   the *swapped* dimensions (a landscape-shaped box even though the real
+   viewport is portrait) and spun 90° around its own centre, which is what
+   makes those two things trade places correctly instead of overflowing. */
+body.in-cardboard.force-rotate #scene {
   top: 50%;
-  transform: translate(-50%, -50%);
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center center;
 }
+body.in-cardboard.force-rotate.force-rotate-flip #scene {
+  transform: translate(-50%, -50%) rotate(-90deg);
+}
+
+/* Rotating the canvas 90° turns the seam between the two lenses with it —
+   from a vertical line at top-centre to a horizontal one at left-centre, the
+   two eyes now stacked instead of side by side. Exit and Flip move to match,
+   or they end up sitting under a lens rather than between the two. */
+body.in-cardboard.force-rotate #exit-cardboard,
+body.in-cardboard.force-rotate #flip-cardboard {
+  top: 50%;
+  left: 6px;
+  transform: translateY(-50%);
+}
+body.in-cardboard.force-rotate #flip-cardboard { top: calc(50% + 40px); }
 
 /* -------------------------------------------------------------- topbar */
 
