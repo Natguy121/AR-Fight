@@ -44,7 +44,7 @@ const DEFAULT_DISTORTION = { k1: 0.18, k2: 0.16 };
  * a tunnel; this is the over-render that makes the displayed view come out
  * roughly life-sized.
  */
-const CARDBOARD_FOV = 104;
+const CARDBOARD_FOV = 120;
 
 const WARP_VERTEX = /* glsl */`
   varying vec2 vUv;
