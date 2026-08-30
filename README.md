@@ -89,6 +89,31 @@ On Render, add the key from the dashboard under the service's Environment
 tab — `render.yaml` declares the variable but deliberately leaves it unset,
 so the value itself never lives in this repo.
 
+### Playing in VR
+
+Open **`/vr.html`** and you are sitting at a round table in a villa, in the
+evening, with everyone else at the table around you and a keyboard floating
+in mid air to type your hints on. Point at a key and pull the trigger; point
+at the player you suspect and pull it again to vote.
+
+It is another client, not another game. It speaks the same protocol as the
+phone client, so **a headset and four phones can sit at one table** — the
+server has no idea which of its players is wearing one. The rule that
+matters is untouched for the same reason: the word is redacted in
+`Game.viewFor` on the server, so a Mr. White in a headset is not sent it
+either, and no amount of poking at a 3D scene can reveal something that
+never arrived.
+
+No headset? Open it anyway — drag to look around and click to play. The
+table works exactly the same, which is also what lets `npm run smoke:vr`
+play a whole round through it in a headless browser.
+
+The room is drawn rather than downloaded: the terracotta, the plaster, the
+evening sky through the arches and every readable word in the scene are
+painted into canvases at runtime, so the whole villa costs a few kilobytes
+of code on top of three.js rather than a few megabytes of assets. That is
+what keeps it loadable off the same free-tier server as everything else.
+
 ### Playing in person, on one phone
 
 No wifi needed, nothing to host — from the front page, **Play pass-and-play
@@ -199,11 +224,14 @@ not display it, which is a much weaker claim.
 ## Development
 
 ```sh
-npm test      # the rules: 48 tests, whole games played deterministically
-npm run smoke # four real browsers playing a real game
-npm run verify# both
-npm run dev   # restarts on save
+npm test         # the rules: 58 tests, whole games played deterministically
+npm run smoke    # four real browsers playing a real game
+npm run smoke:vr # a headset and three phones at one table, VR driven by pointer
+npm run verify   # all three
+npm run dev      # restarts on save
 ```
+
+`npm run smoke:vr --shots` leaves screenshots of the villa in `tools/shots/`.
 
 ```
 server/
@@ -219,6 +247,14 @@ public/
     text.js     what counts as one word, and what counts as the right guess
   index.html, app.js       the online client: one page, no framework, no build step
   local.html, local.js     pass-and-play: the same Game.js, run in one browser tab
+  vr.html, vr/             the villa: same protocol as app.js, WebXR and a mid-air keyboard
+    paint.js    the palette, and every texture and label, painted into canvases
+    villa.js    the room, the round table and the chairs, all from primitives
+    seats.js    who is sitting where, and what floats over their head
+    keyboard.js the mid-air keyboard: one quad, hit-tested by UV
+    net.js      the same WebSocket protocol the phones speak
+    main.js     scene, WebXR, pointing at things, and the game wiring
+  vendor/         three.js, vendored so there is still no build step
 tools/          tests
 render.yaml, Dockerfile, firebase.json, firebase-public/   see Hosting it for real, above
 ```
@@ -263,6 +299,11 @@ instead of re-implementing the rules a second time for one browser tab.
   narrowed to a category, so it doesn't win by lucky guess more than a
   caught player reasonably should. It's a real step up from generic filler,
   not a substitute for `ANTHROPIC_API_KEY`.
+- **Nobody's head or hands are tracked between players.** In VR you see
+  everyone as a seated figure that does not move — the protocol carries no
+  pose data, and adding it would mean every phone at the table sending
+  position updates it has no way to produce. You get who is speaking, what
+  they said and who has voted, which is all the game actually turns on.
 - **Pass-and-play keeps no server, so it keeps no history.** Reloading the
   page mid-round loses that round — there's nothing to reconnect to, unlike
   the online version's reconnect tokens. Everyone's names and scores between

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#140e09" />
+<meta name="mobile-web-app-capable" content="yes" />
+<title>Mr. White — in VR</title>
+<link rel="stylesheet" href="./styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🕵️</text></svg>" />
+</head>
+<body class="vr-body">
+
+<div id="scene"></div>
+
+<!-- Sit down on the flat page first, then put the headset on. Typing a name
+     and a table code is the one thing a system keyboard is still better at. -->
+<main id="overlay" class="screen vr-overlay">
+  <div class="card">
+    <h1 class="wordmark">Mr.&nbsp;White</h1>
+    <p class="tagline">
+      Round table, cosy villa, a keyboard you type on in mid&nbsp;air. The same
+      tables as the phone game — headsets and phones can sit at one together.
+    </p>
+
+    <label class="field">
+      <span>Your name</span>
+      <input id="entry-name" type="text" maxlength="16" autocomplete="nickname"
+             placeholder="Sam" enterkeyhint="go" />
+    </label>
+
+    <button id="entry-create" class="btn btn-primary" type="button">Start a table</button>
+
+    <div class="or"><span>or join one</span></div>
+
+    <div class="join-row">
+      <input id="entry-code" type="text" maxlength="4" autocomplete="off"
+             autocapitalize="characters" spellcheck="false"
+             placeholder="CODE" enterkeyhint="go" />
+      <button id="entry-join" class="btn" type="button">Join</button>
+    </div>
+
+    <p class="error" id="entry-error" hidden></p>
+
+    <p class="fineprint">
+      No headset? Sit down anyway — you can drag to look around the room and
+      click to play, and the table works exactly the same.
+    </p>
+
+    <p class="local-link">
+      <a href="./index.html">← Play on a phone</a> ·
+      <a href="./local.html">Pass-and-play</a>
+    </p>
+  </div>
+</main>
+
+<div id="hud" hidden>
+  <span id="conn" class="conn" title="Connected"></span>
+  <button id="enter-vr" class="btn btn-primary" type="button" disabled>Checking for a headset…</button>
+</div>
+
+<noscript>
+  <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
+  <p>This game needs JavaScript.</p></div></div>
+</noscript>
+
+<script type="module" src="./vr/main.js"></script>
+</body>
+</html>

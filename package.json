@@ -9,7 +9,8 @@
     "dev": "node --watch server/index.js",
     "test": "node tools/test.js",
     "smoke": "node tools/smoke.js",
-    "verify": "npm test && npm run smoke"
+    "smoke:vr": "node tools/vr-smoke.js",
+    "verify": "npm test && npm run smoke && npm run smoke:vr"
   },
   "engines": {
     "node": ">=18"
