@@ -27,6 +27,7 @@ export const PALETTE = {
   wood: 0x6f4a31,
   woodLight: 0xa2734d,
   beam: 0x4f3220,
+  cloth: 0x6f7d63,   // seat cushions: a faded sage, to break up all the terracotta
   rug: 0x8d4b4b,
   rugTrim: 0xd9b382,
   leaf: 0x4f7a43,

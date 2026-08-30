@@ -298,6 +298,24 @@ select { width: auto; padding-right: 34px; }
 }
 #hud .btn { min-height: 40px; width: auto; padding: 0 16px; }
 
+/* The only control that survives into viewer mode, and the only place it can
+   go: the strip down the middle, between the two lens views. */
+#exit-cardboard {
+  position: fixed;
+  z-index: 12;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: auto;
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 0.82rem;
+  opacity: 0.55;
+}
+
+/* Nothing scrolls or rubber-bands while the phone is strapped to a face. */
+body.in-cardboard { touch-action: none; overscroll-behavior: none; }
+
 /* -------------------------------------------------------------- topbar */
 
 .topbar {

@@ -77,6 +77,23 @@ async function waitForServer(timeoutMs = 15000) {
   return false;
 }
 
+/**
+ * Wait for the scene to actually draw a few more frames.
+ *
+ * Software-rendered WebGL manages single-figure frames per second here, so
+ * anything that only takes effect during a frame — a sensor reading being
+ * consumed, a gaze dwell advancing — needs waiting on by frame count, not by
+ * a sleep that looks generous on a machine with a GPU.
+ */
+async function waitFrames(page, count = 3) {
+  const start = await page.evaluate(() => window.__vr.renderer.info.render.frame);
+  await until(
+    () => page.evaluate((from) => window.__vr.renderer.info.render.frame > from, start + count),
+    `${count} frames to render`,
+    20000,
+  );
+}
+
 /** Click a point in the 3D view the way a mouse would: move, then press. */
 async function clickAt(page, pos, label) {
   if (!pos) throw new Error(`nothing to click for ${label}`);
@@ -149,7 +166,33 @@ async function main() {
     contexts.push(vrContext);
     const vr = await vrContext.newPage();
     vr.on('pageerror', (e) => errors.push(`vr: ${e.message}`));
-    vr.on('console', (m) => { if (m.type() === 'error') errors.push(`vr console: ${m.text()}`); });
+    vr.on('console', (m) => {
+      if (m.type() === 'error') errors.push(`vr console: ${m.text()}`);
+      // three.js says this, at warning level, when a material is handed a
+      // colour that does not exist — a mistyped palette key renders as plain
+      // white and is easy to look straight past. It is always a bug, so it
+      // gets treated as one.
+      if (/has value of undefined/.test(m.text())) errors.push(`vr: ${m.text()}`);
+    });
+
+    // Headless Chromium is a desktop browser: it has no `DeviceOrientationEvent`
+    // at all, because the API only exists where there is a gyroscope to back
+    // it. Standing one in is the only way to exercise viewer mode here, and it
+    // is a fair stand-in — the readings below are the same numbers a phone
+    // reports, so everything downstream of the sensor is the real code.
+    await vr.addInitScript(() => {
+      if (!('DeviceOrientationEvent' in window)) {
+        window.DeviceOrientationEvent = function DeviceOrientationEvent() {};
+      }
+      window.__tiltPhone = (alpha, beta, gamma) => {
+        const event = new Event('deviceorientation');
+        event.alpha = alpha;
+        event.beta = beta;
+        event.gamma = gamma;
+        window.dispatchEvent(event);
+      };
+    });
+
     await vr.goto(`${BASE}/vr.html`, { waitUntil: 'load' });
 
     const gl = await vr.evaluate(() => {
@@ -374,6 +417,85 @@ async function main() {
     check(revealedWord === outcome.word, 'and the headset is shown it too, now that it is over');
 
     if (SHOTS) await vr.screenshot({ path: path.join(SHOT_DIR, 'vr-5-reveal.png') });
+
+    // ------------------------------------------------ phone in a viewer
+    console.log('\nPhone in a viewer');
+
+    // Captured before the lenses come up, so that a round dealt at any point
+    // during viewer mode counts — the gaze may well complete while the head
+    // tracking is being checked, and that is the feature working, not a race.
+    const roundBefore = await vr.evaluate(() => window.__vr.state.round);
+
+    await vr.click('#enter-cardboard');
+    await until(() => vr.evaluate(() => window.__vr.cardboard.active), 'viewer mode to start');
+    check(true, 'the screen splits into a viewer view');
+    // The stereo rig is only set up during a render, so let one happen.
+    await waitFrames(vr);
+
+    const rig = await vr.evaluate(() => {
+      const c = window.__vr.cardboard;
+      // StereoCamera puts the eye offset in each eye's world matrix rather
+      // than its position, so that is where the separation has to be read.
+      const eyeX = (cam) => cam.matrixWorld.elements[12];
+      return {
+        target: Boolean(c.target),
+        left: eyeX(c.stereo.cameraL),
+        right: eyeX(c.stereo.cameraR),
+        reticle: c.reticle.visible,
+        fov: window.__vr.camera.fov,
+      };
+    });
+    check(rig.target, 'both eyes render into a target for the lens correction to work on');
+    check(rig.right - rig.left > 0.05,
+      'the two eyes are actually offset from each other, or it is not stereo',
+      `left ${rig.left}, right ${rig.right}`);
+    check(rig.reticle, 'a gaze reticle appears, since a viewer has no controllers');
+    check(rig.fov > 70, 'and the field of view widens for the lenses', `fov ${rig.fov}`);
+
+    if (SHOTS) await vr.screenshot({ path: path.join(SHOT_DIR, 'vr-6-viewer.png') });
+
+    // Head tracking. The first reading is taken as "straight ahead" whatever
+    // the compass says, so a phone that happens to be pointing south-east
+    // still starts you facing the table rather than a wall.
+    //
+    // Sensor readings are only consumed on a rendered frame, and software
+    // WebGL here manages a handful a second — so these wait for frames rather
+    // than for a stopwatch.
+    await vr.evaluate(() => window.__tiltPhone(137, 90, 0));
+    await waitFrames(vr);
+    const centred = await vr.evaluate(() => window.__vr.forward());
+    check(centred.z < -0.9 && Math.abs(centred.x) < 0.2,
+      'an arbitrary compass heading is re-centred to face the table',
+      `forward ${JSON.stringify(centred)}`);
+
+    await vr.evaluate(() => window.__tiltPhone(167, 90, 0));
+    await waitFrames(vr);
+    const turned = await vr.evaluate(() => window.__vr.forward());
+    const yawDegrees = Math.abs(Math.atan2(turned.x, -turned.z) * 180 / Math.PI);
+    check(yawDegrees > 20 && yawDegrees < 40,
+      'turning the phone 30° turns your head about 30°', `turned ${yawDegrees.toFixed(1)}°`);
+
+    // Face the table again, and let the stare do the rest. Entering a viewer
+    // puts the "next round" button dead ahead, so from here the round gets
+    // dealt by nothing but holding a gaze on it — no hands, no controller,
+    // no tap. It may well fire during the head-tracking checks above, which
+    // is the feature working, so this waits for it rather than timing it.
+    await vr.evaluate(() => window.__vr.cardboard.recentre());
+    await waitFrames(vr);
+    const facing = await vr.evaluate(() => window.__vr.forward());
+    check(facing.z < -0.9, 're-centring points you back at the table',
+      `forward ${JSON.stringify(facing)}`);
+
+    await until(
+      () => vr.evaluate((before) => window.__vr.state.round > before, roundBefore),
+      'the next round to be dealt by gaze alone',
+      25000,
+    );
+    check(true, 'staring at a button long enough presses it, with no controller at all');
+
+    await vr.click('#exit-cardboard');
+    await until(async () => !await vr.evaluate(() => window.__vr.cardboard.active), 'viewer mode to end');
+    check(true, 'and you can get back out again');
 
     // ---------------------------------------------------------- console
     console.log('\nConsole');

@@ -3,6 +3,7 @@ import { buildVilla, TABLE } from './villa.js';
 import { Seating } from './seats.js';
 import { Keyboard } from './keyboard.js';
 import { Panel, roundRect, fitText, wrapLines } from './paint.js';
+import { Cardboard } from './cardboard.js';
 import { createNet, session } from './net.js';
 
 /**
@@ -35,11 +36,14 @@ scene.fog = new THREE.Fog(0x2a1d12, 10, 30);
 
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 60);
 camera.position.set(0, 1.15, 0); // seated eye height, used outside VR only
+// The gaze reticle hangs off the camera, so the camera has to be in the scene
+// graph for it to be drawn at all.
+scene.add(camera);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.xr.enabled = true;
@@ -186,6 +190,8 @@ const pointer = new THREE.Vector2(0, 0);
 let pointerActive = false;
 let hoverButton = null;
 
+const cardboard = new Cardboard(renderer, camera);
+
 function rayLine() {
   const geometry = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1),
@@ -232,6 +238,23 @@ function targets() {
 function pick(ray) {
   const hits = ray.intersectObjects(targets(), false);
   return hits.length ? hits[0] : null;
+}
+
+/**
+ * A stable name for whatever a ray is resting on.
+ *
+ * Gaze-dwell needs to know when you have moved on to a *different* thing, and
+ * the mesh alone is not enough: the whole keyboard is one quad, so looking
+ * from Q to W is the same object and would otherwise let one long stare type
+ * the whole alphabet.
+ */
+function targetIdOf(hit) {
+  if (!hit) return null;
+  const key = keyboard.keyAt(hit);
+  if (key) return `key:${key.label}`;
+  if (hit.object.userData.button) return `button:${hit.object.uuid}`;
+  if (hit.object.userData.voteTargetId) return `vote:${hit.object.userData.voteTargetId}`;
+  return null;
 }
 
 function applyHover(hit) {
@@ -290,6 +313,9 @@ canvas.addEventListener('pointermove', (e) => {
   if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
   lastX = e.clientX;
   lastY = e.clientY;
+  // In a viewer the phone's gyroscope owns the camera; dragging as well would
+  // fight it, and you cannot see your finger anyway.
+  if (cardboard.active) return;
   look.y -= dx * 0.004;
   look.x = Math.max(-1.2, Math.min(0.9, look.x - dy * 0.004));
   if (!renderer.xr.isPresenting) camera.rotation.copy(look);
@@ -297,8 +323,21 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   dragging = false;
   canvas.releasePointerCapture(e.pointerId);
-  if (!dragged && !renderer.xr.isPresenting) select(rayFromPointer());
+  if (dragged || renderer.xr.isPresenting) return;
+  // Most viewers have a lever or button that pokes the screen, so a tap is
+  // the fast path; aim comes from your head either way.
+  if (cardboard.active) select(cardboard.gazeRay(raycaster));
+  else select(rayFromPointer());
 });
+
+// Two fingers re-centres the view, for when the compass has drifted or you
+// sat down facing a different way than you started.
+canvas.addEventListener('touchstart', (e) => {
+  if (cardboard.active && e.touches.length === 2) {
+    cardboard.recentre();
+    e.preventDefault();
+  }
+}, { passive: false });
 
 // A physical keyboard, when there is one, beats a mid-air one every time.
 window.addEventListener('keydown', (e) => {
@@ -364,15 +403,14 @@ function renderWorld() {
   paintWordCard();
   paintLog();
 
-  const canDeal = state.youCanDeal && (state.phase === 'lobby' || state.phase === 'reveal');
-  actionButton.set(state.phase === 'reveal' ? 'Next round' : 'Deal the round', {
-    visible: canDeal && !keyboard.visible,
-  });
-  leaveButton.set('Leave the table');
-
-  // Open the keyboard when the table is waiting on you, and — importantly —
-  // only when the *reason* changes. Re-showing it on every state message would
-  // wipe what you had half-typed each time somebody else did anything.
+  // Settle the keyboard first. The buttons share the space in front of you
+  // and hide themselves while it is up, so deciding that before it has opened
+  // or closed leaves them wrong until the next state message — which, after
+  // the last player has acted, may never come. That is how the host ends up
+  // staring at a finished round with no way to deal the next one.
+  //
+  // Open it only when the *reason* changes, too: re-showing on every state
+  // message would wipe what you had half-typed each time somebody else moved.
   const context = myTurnContext(state);
   if (context !== keyboardContext) {
     keyboardContext = context;
@@ -392,6 +430,12 @@ function renderWorld() {
       });
     }
   }
+
+  const canDeal = state.youCanDeal && (state.phase === 'lobby' || state.phase === 'reveal');
+  actionButton.set(state.phase === 'reveal' ? 'Next round' : 'Deal the round', {
+    visible: canDeal && !keyboard.visible,
+  });
+  leaveButton.set('Leave the table');
 }
 
 function paintStatus() {
@@ -608,6 +652,55 @@ async function setupXR() {
 }
 setupXR();
 
+// ------------------------------------------------- phone in a viewer
+
+const cardboardButton = $('enter-cardboard');
+const exitCardboardButton = $('exit-cardboard');
+
+function setCardboardChrome(on) {
+  // While the phone is in a viewer the page's own controls are behind a lens
+  // and cannot be aimed at, so they come off — all but the way out, which
+  // sits in the seam between the two eyes where you can find it by feel once
+  // the phone is back in your hand.
+  $('hud').hidden = on;
+  exitCardboardButton.hidden = !on;
+  document.body.classList.toggle('in-cardboard', on);
+}
+
+if (!Cardboard.supported) {
+  cardboardButton.disabled = true;
+  cardboardButton.textContent = 'No motion sensors';
+} else {
+  cardboardButton.addEventListener('click', async () => {
+    // Fullscreen the whole page, not just the canvas: a fullscreen element
+    // hides every sibling, and the way out lives outside the canvas.
+    const result = await cardboard.enter();
+    if (!result.ok) {
+      showOverlayError(result.reason);
+      return;
+    }
+    // Whatever you happened to be facing when you put the phone in should not
+    // start counting down the moment the lenses come up. Long enough to get
+    // the phone into the viewer and the viewer onto your face.
+    dwellCooldownUntil = performance.now() + 1500;
+    setCardboardChrome(true);
+  });
+}
+
+exitCardboardButton.addEventListener('click', () => {
+  cardboard.exit();
+  setCardboardChrome(false);
+});
+
+// Leaving fullscreen — the system back gesture, usually — means leaving the
+// viewer, or you are left with a split screen and no way to explain it.
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && cardboard.active) {
+    cardboard.exit();
+    setCardboardChrome(false);
+  }
+});
+
 // ------------------------------------------------------------------- loop
 
 /**
@@ -624,7 +717,14 @@ window.__vr = {
   renderer,
   keyboard,
   seating,
+  cardboard,
   get state() { return state; },
+  /** Which way the camera is facing, for checking the head tracking. */
+  forward() {
+    const v = new THREE.Vector3();
+    camera.getWorldDirection(v);
+    return { x: v.x, y: v.y, z: v.z };
+  },
   /** World point -> screen pixels, for driving pointer events. */
   project(point) {
     const v = point.clone().project(camera);
@@ -650,20 +750,64 @@ window.__vr = {
   voteTargets: () => seating.voteTargets,
 };
 
+// Gaze-and-hold, for viewers with no button at all.
+let dwellId = null;
+let dwellStart = 0;
+let dwellCooldownUntil = 0;
+
+function updateDwell(hit) {
+  const id = targetIdOf(hit);
+  const now = performance.now();
+
+  if (!id) {
+    dwellId = null;
+    cardboard.setReticle(0);
+    return;
+  }
+  if (id !== dwellId) {
+    dwellId = id;
+    dwellStart = now;
+    cardboard.setReticle(0);
+    return;
+  }
+  if (now < dwellCooldownUntil) {
+    cardboard.setReticle(0);
+    return;
+  }
+  const progress = Math.min(1, (now - dwellStart) / cardboard.dwellMs);
+  cardboard.setReticle(progress);
+  if (progress >= 1) {
+    select(cardboard.gazeRay(raycaster));
+    dwellStart = now;
+    // Without a pause, holding still on a key would repeat it forever.
+    dwellCooldownUntil = now + 320;
+  }
+}
+
 renderer.setAnimationLoop(() => {
   let hit = null;
+
   if (renderer.xr.isPresenting) {
     for (const controller of controllers) {
       if (!controller.visible) continue;
       hit = pick(rayFromController(controller));
       if (hit) break;
     }
-  } else if (pointerActive) {
-    hit = pick(rayFromPointer());
+    applyHover(hit);
+  } else if (cardboard.active) {
+    cardboard.update();
+    hit = pick(cardboard.gazeRay(raycaster));
+    applyHover(hit);
+    updateDwell(hit);
+  } else {
+    if (pointerActive) hit = pick(rayFromPointer());
+    applyHover(hit);
   }
-  applyHover(hit);
+
   seating.faceCamera(camera);
-  renderer.render(scene, camera);
+
+  if (cardboard.active) cardboard.render(scene);
+  else renderer.render(scene, camera);
 });
 
 net.connect();

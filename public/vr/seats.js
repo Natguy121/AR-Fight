@@ -148,8 +148,13 @@ export class Seating {
         part.material.transparent = away;
       }
 
-      this._paintNameplate(seat, player, state, isMe);
-      this._paintHint(seat, player, state);
+      // Your own seat is where your head is, so anything floating over it is
+      // floating inside your face — at a viewer's field of view your own
+      // nameplate fills the top of both eyes like a billboard. You already
+      // know your name, and your own hint is in the log.
+      seat.nameplate.mesh.visible = !isMe;
+      if (!isMe) this._paintNameplate(seat, player, state, isMe);
+      this._paintHint(seat, player, state, isMe);
       this._paintVote(seat, player, state, isMe);
     });
   }
@@ -196,10 +201,10 @@ export class Seating {
     });
   }
 
-  _paintHint(seat, player, state) {
+  _paintHint(seat, player, state, isMe) {
     const last = [...(state.hints ?? [])].reverse().find((h) => h.playerId === player.id);
     const voted = state.phase === 'vote' && player.voted;
-    if (!last && !voted) {
+    if (isMe || (!last && !voted)) {
       seat.hint.mesh.visible = false;
       return;
     }

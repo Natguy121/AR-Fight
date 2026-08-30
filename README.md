@@ -104,9 +104,26 @@ matters is untouched for the same reason: the word is redacted in
 either, and no amount of poking at a 3D scene can reveal something that
 never arrived.
 
-No headset? Open it anyway — drag to look around and click to play. The
-table works exactly the same, which is also what lets `npm run smoke:vr`
-play a whole round through it in a headless browser.
+**Got one of the cardboard or plastic viewers you drop a phone into?** Tap
+**Phone in a viewer** and the screen splits into two lens views. Your head
+steers — the phone's gyroscope drives the camera, with the first reading
+taken as "straight ahead" so you start facing the table whichever way the
+compass happens to point — and you pick things by looking at them: rest the
+reticle on a key and a ring fills, or tap the screen if your viewer has one
+of those levers that pokes it. Two fingers re-centres you; **Exit** sits in
+the seam between the two lenses.
+
+The lens correction is the part that has to be right. Those lenses magnify,
+and magnifying lenses pincushion — straight lines bow inward, worse toward
+the edges — so both eyes are rendered into one texture and drawn back
+through a barrel-distortion shader that cancels it. That is also why the
+scene is rendered at a much wider field of view than you end up seeing: the
+distortion samples outward, so a good third of what is drawn ends up outside
+the lens disc, and rendering at the FOV you want to see gives you a tunnel.
+
+No headset and no viewer? Open it anyway — drag to look around and click to
+play. The table works exactly the same, which is also what lets
+`npm run smoke:vr` play a whole round through it in a headless browser.
 
 The room is drawn rather than downloaded: the terracotta, the plaster, the
 evening sky through the arches and every readable word in the scene are
@@ -252,6 +269,7 @@ public/
     villa.js    the room, the round table and the chairs, all from primitives
     seats.js    who is sitting where, and what floats over their head
     keyboard.js the mid-air keyboard: one quad, hit-tested by UV
+    cardboard.js phone-in-a-viewer: stereo, lens correction, gyro, gaze
     net.js      the same WebSocket protocol the phones speak
     main.js     scene, WebXR, pointing at things, and the game wiring
   vendor/         three.js, vendored so there is still no build step
@@ -299,6 +317,12 @@ instead of re-implementing the rules a second time for one browser tab.
   narrowed to a category, so it doesn't win by lucky guess more than a
   caught player reasonably should. It's a real step up from generic filler,
   not a substitute for `ANTHROPIC_API_KEY`.
+- **A phone viewer has no idea where your head is, only which way it points.**
+  The gyroscope gives rotation and nothing else, so you can look around from
+  your seat but never lean in to read something. The distortion coefficients
+  are a reasonable middle setting too, not a profile for your particular
+  viewer — the cheap ones vary quite a bit, and there is no QR code scanner
+  here to tell them apart.
 - **Nobody's head or hands are tracked between players.** In VR you see
   everyone as a seated figure that does not move — the protocol carries no
   pose data, and adding it would mean every phone at the table sending

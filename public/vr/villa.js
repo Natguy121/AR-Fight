@@ -410,12 +410,27 @@ export function buildVilla(seatCount = 6) {
   bulb.position.y = lampY - 0.08;
   group.add(bulb);
 
-  const lamp = new THREE.PointLight(PALETTE.glow, 17, 11, 2);
-  lamp.position.y = lampY - 0.1;
+  // Hung just below the rim of the shade rather than up inside it. Inside, at
+  // a few centimetres from the cone, the inverse-square falloff puts a
+  // blown-out white disc on the shade's inner face — which is nothing like a
+  // lamp and, at the wide field of view a viewer uses, sits right at the top
+  // of both eyes.
+  // A spotlight aimed down, not a bare bulb.
+  //
+  // A point light here throws just as much light up as down, and a metre
+  // above it is a ceiling: the result is a burnt-out white patch overhead
+  // that a shade cannot fix, because a shade only blocks light if it casts a
+  // shadow, and shadowing a light from a mesh it sits inside is fiddly and
+  // expensive. A cone pointed at the table is what the shade is *for*, and it
+  // gets the pool of light on the table with nothing spilled on the ceiling.
+  const lamp = new THREE.SpotLight(PALETTE.glow, 26, 12, Math.PI / 3.4, 0.55, 2);
+  lamp.position.y = lampY - 0.16;
+  lamp.target.position.set(0, 0, 0);
   lamp.castShadow = true;
   lamp.shadow.mapSize.set(1024, 1024);
   lamp.shadow.bias = -0.004;
   group.add(lamp);
+  group.add(lamp.target);
 
   // Two sconces on the solid wall, to keep the far side of the room from
   // falling into a black pit.

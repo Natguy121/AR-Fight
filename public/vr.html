@@ -43,8 +43,11 @@
     <p class="error" id="entry-error" hidden></p>
 
     <p class="fineprint">
-      No headset? Sit down anyway — you can drag to look around the room and
-      click to play, and the table works exactly the same.
+      Got one of the cardboard or plastic viewers you drop a phone into? Sit
+      down here first, then tap <b>Phone in a viewer</b> — the screen splits
+      into two lenses, your head steers, and you pick things by looking at
+      them. No viewer and no headset? Drag to look around and click to play;
+      the table works exactly the same.
     </p>
 
     <p class="local-link">
@@ -56,8 +59,13 @@
 
 <div id="hud" hidden>
   <span id="conn" class="conn" title="Connected"></span>
+  <button id="enter-cardboard" class="btn" type="button">Phone in a viewer</button>
   <button id="enter-vr" class="btn btn-primary" type="button" disabled>Checking for a headset…</button>
 </div>
+
+<!-- Parked in the seam between the two lens views, which is the one part of
+     the screen that is not behind a lens once the phone is in the viewer. -->
+<button id="exit-cardboard" class="btn" type="button" hidden>Exit</button>
 
 <noscript>
   <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
