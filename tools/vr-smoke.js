@@ -471,6 +471,33 @@ async function main() {
     check(rotated.aspect > 1, 'so the camera still renders a landscape-shaped stereo pair',
       `aspect ${rotated.aspect}`);
 
+    // Safari's own vh/vw are sized against the largest the viewport could
+    // ever be with its browser chrome fully collapsed, not what's actually
+    // visible — a box built from 100vh/100vw can end up taller than the real
+    // screen and lose its bottom edge off-screen. main.js sets --vh/--vw
+    // from window.innerHeight/innerWidth instead, so this checks the
+    // rotated box actually lands flush with the real viewport, not just
+    // that the CSS rule exists.
+    const fit = await vr.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      const rect = document.getElementById('scene').getBoundingClientRect();
+      return {
+        vh: style.getPropertyValue('--vh').trim(),
+        vw: style.getPropertyValue('--vw').trim(),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      };
+    });
+    check(fit.vh === '800px' && fit.vw === '400px',
+      '--vh/--vw are set from the real, measured viewport size, not left to CSS vh/vw',
+      `vh ${fit.vh}, vw ${fit.vw}`);
+    const closeTo = (a, b) => Math.abs(a - b) < 1;
+    check(
+      closeTo(fit.rect.x, 0) && closeTo(fit.rect.y, 0)
+        && closeTo(fit.rect.width, 400) && closeTo(fit.rect.height, 800),
+      'so the rotated canvas lands exactly flush with the real screen, not taller than it',
+      `rect ${JSON.stringify(fit.rect)}`,
+    );
+
     const flipSign = await vr.evaluate(() => window.__vr.cardboard.rotated);
     await vr.click('#flip-cardboard');
     await waitFrames(vr);

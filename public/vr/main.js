@@ -73,6 +73,13 @@ let cardboardRotateSign = 1;
 function resize() {
   let w = window.innerWidth;
   let h = window.innerHeight;
+  // CSS's own vh/vw are unusable for this: Safari sizes them against the
+  // largest the viewport could ever be with its chrome fully collapsed, not
+  // what's actually on screen right now, which is exactly wrong for a box
+  // that then gets rotated to fill the real screen exactly. These stand in
+  // for 100vh/100vw in the force-rotate rule in styles.css instead.
+  document.documentElement.style.setProperty('--vh', `${h}px`);
+  document.documentElement.style.setProperty('--vw', `${w}px`);
   const rotate = cardboard.active && w < h;
   document.body.classList.toggle('force-rotate', rotate);
   document.body.classList.toggle('force-rotate-flip', rotate && cardboardRotateSign < 0);

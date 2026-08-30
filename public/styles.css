@@ -327,14 +327,19 @@ body.in-cardboard { touch-action: none; overscroll-behavior: none; }
    to fill it as if the viewport really were landscape. #scene is sized to
    the *swapped* dimensions (a landscape-shaped box even though the real
    viewport is portrait) and spun 90° around its own centre, which is what
-   makes those two things trade places correctly instead of overflowing. */
+   makes those two things trade places correctly instead of overflowing.
+   --vh/--vw (set in main.js's resize(), in real measured pixels) stand in
+   for 100vh/100vw: Safari's vh is notoriously sized against the largest the
+   viewport could ever be with its chrome fully collapsed, not what is
+   actually visible right now, so anything built from it can run taller than
+   the real screen and lose its bottom edge off-screen. */
 body.in-cardboard.force-rotate #scene {
   top: 50%;
   right: auto;
   bottom: auto;
   left: 50%;
-  width: 100vh;
-  height: 100vw;
+  width: var(--vh, 100vh);
+  height: var(--vw, 100vw);
   transform: translate(-50%, -50%) rotate(90deg);
   transform-origin: center center;
 }
