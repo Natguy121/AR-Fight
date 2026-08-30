@@ -200,6 +200,7 @@ export class Cardboard {
 
     this.target = null;
     this._savedFov = camera.fov;
+    this._savedAspect = camera.aspect;
 
     // The screen-space pass that un-does the lenses.
     this.warpScene = new THREE.Scene();
@@ -338,7 +339,9 @@ export class Cardboard {
     this.tracker.enable();
     this.tracker.recentre();
     this._savedFov = this.camera.fov;
+    this._savedAspect = this.camera.aspect;
     this.camera.fov = CARDBOARD_FOV;
+    this.camera.aspect = 1.0;
     this.camera.updateProjectionMatrix();
 
     this.active = true;
@@ -353,6 +356,7 @@ export class Cardboard {
     this.tracker.disable();
     this.reticle.visible = false;
     this.camera.fov = this._savedFov;
+    this.camera.aspect = this._savedAspect;
     this.camera.updateProjectionMatrix();
     this.camera.quaternion.identity();
     try { screen.orientation?.unlock?.(); } catch { /* fine */ }
