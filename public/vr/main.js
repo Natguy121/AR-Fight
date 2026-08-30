@@ -656,6 +656,20 @@ setupXR();
 
 const cardboardButton = $('enter-cardboard');
 const exitCardboardButton = $('exit-cardboard');
+const rotatePrompt = $('rotate-prompt');
+
+// iOS refuses screen.orientation.lock, so cardboard.enter() can succeed with
+// the phone still upright. Rendered that way each lens half is a tall sliver
+// rather than a wide one, and the circular lens correction stretches to fill
+// it — the two eyes bleed into one shape covering the screen. This covers
+// that up rather than showing it, and lifts the moment the screen turns wide.
+function updateRotatePrompt() {
+  if (!cardboard.active) return;
+  rotatePrompt.hidden = window.innerWidth >= window.innerHeight;
+}
+window.addEventListener('resize', updateRotatePrompt);
+window.addEventListener('orientationchange', updateRotatePrompt);
+screen.orientation?.addEventListener?.('change', updateRotatePrompt);
 
 function setCardboardChrome(on) {
   // While the phone is in a viewer the page's own controls are behind a lens
@@ -665,6 +679,8 @@ function setCardboardChrome(on) {
   $('hud').hidden = on;
   exitCardboardButton.hidden = !on;
   document.body.classList.toggle('in-cardboard', on);
+  if (on) updateRotatePrompt();
+  else rotatePrompt.hidden = true;
 }
 
 if (!Cardboard.supported) {
@@ -796,9 +812,16 @@ renderer.setAnimationLoop(() => {
     applyHover(hit);
   } else if (cardboard.active) {
     cardboard.update();
-    hit = pick(cardboard.gazeRay(raycaster));
-    applyHover(hit);
-    updateDwell(hit);
+    // While the rotate prompt covers the view, the gaze ray is still pointed
+    // at whatever a portrait render happens to line up with — nothing on
+    // screen a person can actually see, so it must not be allowed to fire.
+    if (!rotatePrompt.hidden) {
+      cardboard.setReticle(0);
+    } else {
+      hit = pick(cardboard.gazeRay(raycaster));
+      applyHover(hit);
+      updateDwell(hit);
+    }
   } else {
     if (pointerActive) hit = pick(rayFromPointer());
     applyHover(hit);

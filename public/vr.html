@@ -67,6 +67,15 @@
      the screen that is not behind a lens once the phone is in the viewer. -->
 <button id="exit-cardboard" class="btn" type="button" hidden>Exit</button>
 
+<!-- The lens split only looks right side-by-side. iOS won't let the page
+     lock the screen to landscape, so if the phone is still portrait when the
+     viewer starts, this covers the broken view instead of showing it. -->
+<div id="rotate-prompt" class="rotate-prompt" hidden>
+  <div class="rotate-icon" aria-hidden="true">📱</div>
+  <p>Turn your phone sideways</p>
+  <p class="rotate-sub">The lenses only line up in landscape.</p>
+</div>
+
 <noscript>
   <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
   <p>This game needs JavaScript.</p></div></div>

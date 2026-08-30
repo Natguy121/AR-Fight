@@ -454,6 +454,20 @@ async function main() {
 
     if (SHOTS) await vr.screenshot({ path: path.join(SHOT_DIR, 'vr-6-viewer.png') });
 
+    // iOS won't let the page lock the screen to landscape, so the phone can
+    // still be portrait once the lenses come up — a real device turning the
+    // long way round, standing in for what screen.orientation.lock silently
+    // failing to do on that platform looks like here.
+    await vr.setViewportSize({ width: 400, height: 800 });
+    await waitFrames(vr);
+    const promptShown = await vr.evaluate(() => !document.getElementById('rotate-prompt').hidden);
+    check(promptShown, 'a portrait screen is covered with a rotate prompt instead of the broken split view');
+
+    await vr.setViewportSize({ width: 1100, height: 760 });
+    await waitFrames(vr);
+    const promptHiddenAgain = await vr.evaluate(() => document.getElementById('rotate-prompt').hidden);
+    check(promptHiddenAgain, 'and the prompt lifts the moment the screen turns landscape again');
+
     // Head tracking. The first reading is taken as "straight ahead" whatever
     // the compass says, so a phone that happens to be pointing south-east
     // still starts you facing the table rather than a wall.

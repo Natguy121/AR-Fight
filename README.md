@@ -113,6 +113,13 @@ reticle on a key and a ring fills, or tap the screen if your viewer has one
 of those levers that pokes it. Two fingers re-centres you; **Exit** sits in
 the seam between the two lenses.
 
+The two lens views only line up side by side in landscape — most of these
+viewers hold the phone the long way round. The page tries to lock the screen
+that way itself, but iOS refuses that lock outright, so if the phone is still
+upright when the lenses come up, a prompt covers the view and asks you to
+turn it rather than showing the two lenses squeezed into tall slivers, which
+is not a stereo pair, just one shape covering the screen.
+
 The lens correction is the part that has to be right. Those lenses magnify,
 and magnifying lenses pincushion — straight lines bow inward, worse toward
 the edges — so both eyes are rendered into one texture and drawn back

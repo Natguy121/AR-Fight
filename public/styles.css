@@ -316,6 +316,42 @@ select { width: auto; padding-right: 34px; }
 /* Nothing scrolls or rubber-bands while the phone is strapped to a face. */
 body.in-cardboard { touch-action: none; overscroll-behavior: none; }
 
+/* Covers the split view rather than letting it show: in portrait each lens
+   half is tall and narrow, so the circular lens correction stretches into a
+   shape that fills the whole screen — one warped blob, not two lenses. */
+.rotate-prompt {
+  position: fixed;
+  inset: 0;
+  /* Below #exit-cardboard (12), not above it — covering the one way out
+     along with the broken view would trap whoever can't get the phone
+     rotated, or doesn't want to. */
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+  padding: 24px;
+}
+.rotate-icon {
+  font-size: 2.6rem;
+  transform: rotate(90deg);
+  animation: rotate-prompt-turn 1.6s ease-in-out infinite;
+}
+.rotate-prompt p { margin: 0; font-size: 1.05rem; font-weight: 650; }
+.rotate-prompt .rotate-sub {
+  font-size: 0.85rem;
+  font-weight: 450;
+  color: var(--text-dim);
+}
+@keyframes rotate-prompt-turn {
+  0%, 100% { transform: rotate(90deg); }
+  50% { transform: rotate(0deg); }
+}
+
 /* -------------------------------------------------------------- topbar */
 
 .topbar {
