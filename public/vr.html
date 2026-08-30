@@ -46,9 +46,11 @@
       Got one of the cardboard or plastic viewers you drop a phone into? Sit
       down here first, then tap <b>Phone in a viewer</b> — the screen splits
       into two lenses, your head steers, and you pick things by looking at
-      them. No viewer and no headset? Drag to look around and click to play;
-      the table works exactly the same. Turn the phone sideways before or
-      just after tapping in — the two lenses only line up in landscape.
+      them. If your phone won't rotate to landscape on its own — rotation
+      lock, usually — it draws the two lenses turned to fit anyway, no
+      action needed; tap <b>Flip</b> in the seam between them if it looks
+      turned the wrong way. No viewer and no headset? Drag to look around
+      and click to play; the table works exactly the same.
     </p>
 
     <p class="local-link">
@@ -68,14 +70,12 @@
      the screen that is not behind a lens once the phone is in the viewer. -->
 <button id="exit-cardboard" class="btn" type="button" hidden>Exit</button>
 
-<!-- The lens split only looks right side-by-side. iOS won't let the page
-     lock the screen to landscape, so if the phone is still portrait when the
-     viewer starts, this covers the broken view instead of showing it. -->
-<div id="rotate-prompt" class="rotate-prompt" hidden>
-  <div class="rotate-icon" aria-hidden="true">📱</div>
-  <p>Turn your phone sideways</p>
-  <p class="rotate-sub">The lenses only line up in landscape.</p>
-</div>
+<!-- Only shown once the page has had to rotate the canvas itself because the
+     real viewport stayed portrait (rotation lock, or iOS ignoring the lock
+     request) — there's no way to tell from script which way a given phone
+     got turned, so a wrong first guess is fixed here rather than guessed at
+     harder. Sits below Exit in the same seam. -->
+<button id="flip-cardboard" class="btn" type="button">Flip ⟲</button>
 
 <noscript>
   <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>

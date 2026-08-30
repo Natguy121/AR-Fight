@@ -24,6 +24,13 @@ import * as THREE from '../vendor/three.module.js';
  *    your head: a reticle in the middle of your view, and either a tap (most
  *    viewers have a button that pokes the screen) or a dwell — hold your gaze
  *    and a ring fills. Both, because plenty of viewers have no button at all.
+ * 4. **Landscape, whether or not the OS agrees.** This class only ever renders
+ *    into whatever size it's given — it has no idea if that size came from a
+ *    real landscape viewport or from main.js rotating a still-portrait one to
+ *    fake it. `forceTwist` (set via `setRotated`) exists purely so the head
+ *    tracking's idea of "up" agrees with whichever of those happened, since
+ *    the device's raw motion sensors keep reporting true physical tilt either
+ *    way and don't know the canvas got turned out from under them.
  */
 
 const DEFAULT_DISTORTION = { k1: 0.18, k2: 0.16 };
@@ -99,6 +106,13 @@ class OrientationTracker {
     this.beta = 0;
     this.gamma = 0;
     this.screenAngle = 0;
+    // Extra twist layered on top of screen.orientation.angle. Device motion
+    // sensors report true physical tilt no matter what the OS does with the
+    // layout, so if the phone is rotation-locked and screen.orientation.angle
+    // sits stuck at 0 while the page rotates its own canvas to compensate,
+    // "up" would otherwise fight the rotation we just applied — this is what
+    // keeps the two in step.
+    this.forceTwist = 0;
 
     this._euler = new THREE.Euler();
     this._q = new THREE.Quaternion();
@@ -164,7 +178,7 @@ class OrientationTracker {
     this._euler.set(this.beta, this.alpha, -this.gamma, 'YXZ');
     this._q.setFromEuler(this._euler);
     this._q.multiply(this._uprightTwist);
-    this._q.multiply(this._screenTwist.setFromAxisAngle(this._zAxis, -this.screenAngle));
+    this._q.multiply(this._screenTwist.setFromAxisAngle(this._zAxis, -(this.screenAngle + this.forceTwist)));
 
     if (this._needsRecentre) {
       // Cancel whatever compass heading we happen to have started at, so
@@ -201,6 +215,14 @@ export class Cardboard {
     this.target = null;
     this._savedFov = camera.fov;
     this._savedAspect = camera.aspect;
+    // Set once the viewport comes up still portrait — the OS declined to
+    // rotate its own layout, most often because rotation lock is on, or on
+    // iOS because screen.orientation.lock() has no effect at all. 0 when the
+    // real viewport is already landscape and nothing needs compensating; +1
+    // or -1 once we're rotating the canvas ourselves, one for each direction
+    // a phone can physically be turned, since there is no way to tell which
+    // one a person actually used from script.
+    this.rotated = 0;
 
     // The screen-space pass that un-does the lenses.
     this.warpScene = new THREE.Scene();
@@ -334,7 +356,11 @@ export class Cardboard {
     } catch { /* some browsers refuse; the mode still works, just with chrome */ }
     try {
       await screen.orientation?.lock?.('landscape');
-    } catch { /* not supported on iOS; the user turns the phone themselves */ }
+    } catch {
+      // Not supported on iOS at all, and rotation lock defeats it everywhere
+      // else too — main.js's resize() covers for this by rotating the canvas
+      // itself instead of trusting the viewport to have actually turned.
+    }
 
     this.tracker.enable();
     this.tracker.recentre();
@@ -359,12 +385,29 @@ export class Cardboard {
     this.camera.aspect = this._savedAspect;
     this.camera.updateProjectionMatrix();
     this.camera.quaternion.identity();
+    this.setRotated(0);
     try { screen.orientation?.unlock?.(); } catch { /* fine */ }
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
   }
 
   recentre() {
     this.tracker.recentre();
+  }
+
+  /**
+   * @param {-1|0|1} sign 0 once the real viewport is landscape and nothing
+   *   needs correcting; otherwise which way the canvas is being rotated to
+   *   fake it, so the head-tracking twist stays in step with what is drawn.
+   */
+  setRotated(sign) {
+    this.rotated = sign;
+    this.tracker.forceTwist = sign * Math.PI / 2;
+  }
+
+  /** Wrong way round? Flip without needing the phone to move at all. */
+  flipRotation() {
+    if (this.rotated === 0) return;
+    this.setRotated(-this.rotated);
   }
 
   _resizeTarget() {

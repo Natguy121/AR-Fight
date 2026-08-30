@@ -115,10 +115,14 @@ the seam between the two lenses.
 
 The two lens views only line up side by side in landscape — most of these
 viewers hold the phone the long way round. The page tries to lock the screen
-that way itself, but iOS refuses that lock outright, so if the phone is still
-upright when the lenses come up, a prompt covers the view and asks you to
-turn it rather than showing the two lenses squeezed into tall slivers, which
-is not a stereo pair, just one shape covering the screen.
+that way itself, but iOS refuses that lock outright, and rotation lock
+defeats it on any platform, so the real viewport can easily stay portrait no
+matter which way the phone is actually held. Rather than depend on that lock
+working, the page rotates the canvas itself to fill a still-portrait
+viewport as if it were landscape, and turns the head tracking's sense of "up"
+by the same amount so the two stay in step — nothing to do, though **Flip**
+appears in the seam if it guessed the direction backwards, since there is no
+way to tell from script which way round a given phone was turned.
 
 The lens correction is the part that has to be right. Those lenses magnify,
 and magnifying lenses pincushion — straight lines bow inward, worse toward

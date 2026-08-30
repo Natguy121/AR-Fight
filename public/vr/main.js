@@ -50,9 +50,34 @@ renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 $('scene').appendChild(renderer.domElement);
 
+const cardboard = new Cardboard(renderer, camera);
+// Which way to rotate the canvas when the real viewport is still portrait —
+// flipped by the on-screen button if the guess is backwards for how this
+// particular phone got turned. Two people can hold the same viewer either
+// way round, and script has no means to tell which.
+let cardboardRotateSign = 1;
+
+/**
+ * The viewport a cardboard viewer needs is landscape, wider than it is
+ * tall — two lenses side by side. Most phones get there by the OS rotating
+ * its layout when you turn the phone, which is what innerWidth/innerHeight
+ * normally pick up below with nothing special required. But that rotation
+ * is the OS's choice, not the page's: rotation lock in Control Center stops
+ * it outright, and iOS Safari has never honoured screen.orientation.lock()
+ * to force it either. So rather than leaving the phone stuck showing a
+ * portrait-shaped slice of a stereo pair — two lens circles squeezed into
+ * tall slivers that bleed into one shape — this rotates the canvas itself
+ * to fill a still-portrait viewport, and tells the head-tracking about the
+ * same turn so "up" agrees with what's drawn.
+ */
 function resize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+  const rotate = cardboard.active && w < h;
+  document.body.classList.toggle('force-rotate', rotate);
+  document.body.classList.toggle('force-rotate-flip', rotate && cardboardRotateSign < 0);
+  cardboard.setRotated(rotate ? cardboardRotateSign : 0);
+  if (rotate) { const t = w; w = h; h = t; }
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
@@ -189,8 +214,6 @@ const controllers = [];
 const pointer = new THREE.Vector2(0, 0);
 let pointerActive = false;
 let hoverButton = null;
-
-const cardboard = new Cardboard(renderer, camera);
 
 function rayLine() {
   const geometry = new THREE.BufferGeometry().setFromPoints([
@@ -656,20 +679,7 @@ setupXR();
 
 const cardboardButton = $('enter-cardboard');
 const exitCardboardButton = $('exit-cardboard');
-const rotatePrompt = $('rotate-prompt');
-
-// iOS refuses screen.orientation.lock, so cardboard.enter() can succeed with
-// the phone still upright. Rendered that way each lens half is a tall sliver
-// rather than a wide one, and the circular lens correction stretches to fill
-// it — the two eyes bleed into one shape covering the screen. This covers
-// that up rather than showing it, and lifts the moment the screen turns wide.
-function updateRotatePrompt() {
-  if (!cardboard.active) return;
-  rotatePrompt.hidden = window.innerWidth >= window.innerHeight;
-}
-window.addEventListener('resize', updateRotatePrompt);
-window.addEventListener('orientationchange', updateRotatePrompt);
-screen.orientation?.addEventListener?.('change', updateRotatePrompt);
+const flipButton = $('flip-cardboard');
 
 function setCardboardChrome(on) {
   // While the phone is in a viewer the page's own controls are behind a lens
@@ -679,8 +689,9 @@ function setCardboardChrome(on) {
   $('hud').hidden = on;
   exitCardboardButton.hidden = !on;
   document.body.classList.toggle('in-cardboard', on);
-  if (on) updateRotatePrompt();
-  else rotatePrompt.hidden = true;
+  // Whether the canvas actually needs rotating is only known once the real
+  // viewport size is in hand, which resize() reads fresh every time.
+  resize();
 }
 
 if (!Cardboard.supported) {
@@ -706,6 +717,15 @@ if (!Cardboard.supported) {
 exitCardboardButton.addEventListener('click', () => {
   cardboard.exit();
   setCardboardChrome(false);
+});
+
+// Only ever meaningful once the canvas is being force-rotated to fake
+// landscape — CSS keeps it hidden the rest of the time. There is no way to
+// know from script which way round a given phone was turned in the viewer,
+// so a wrong first guess is corrected here rather than guessed harder.
+flipButton.addEventListener('click', () => {
+  cardboardRotateSign *= -1;
+  resize();
 });
 
 // Leaving fullscreen — the system back gesture, usually — means leaving the
@@ -812,16 +832,9 @@ renderer.setAnimationLoop(() => {
     applyHover(hit);
   } else if (cardboard.active) {
     cardboard.update();
-    // While the rotate prompt covers the view, the gaze ray is still pointed
-    // at whatever a portrait render happens to line up with — nothing on
-    // screen a person can actually see, so it must not be allowed to fire.
-    if (!rotatePrompt.hidden) {
-      cardboard.setReticle(0);
-    } else {
-      hit = pick(cardboard.gazeRay(raycaster));
-      applyHover(hit);
-      updateDwell(hit);
-    }
+    hit = pick(cardboard.gazeRay(raycaster));
+    applyHover(hit);
+    updateDwell(hit);
   } else {
     if (pointerActive) hit = pick(rayFromPointer());
     applyHover(hit);

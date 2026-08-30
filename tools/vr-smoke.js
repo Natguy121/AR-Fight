@@ -454,19 +454,43 @@ async function main() {
 
     if (SHOTS) await vr.screenshot({ path: path.join(SHOT_DIR, 'vr-6-viewer.png') });
 
-    // iOS won't let the page lock the screen to landscape, so the phone can
-    // still be portrait once the lenses come up — a real device turning the
-    // long way round, standing in for what screen.orientation.lock silently
-    // failing to do on that platform looks like here.
+    // iOS won't let the page lock the screen to landscape, and rotation lock
+    // defeats it on any platform — so the phone can still be portrait once
+    // the lenses come up. A real device stuck that way, standing in for it
+    // here as a viewport that resizes without ever actually turning.
     await vr.setViewportSize({ width: 400, height: 800 });
     await waitFrames(vr);
-    const promptShown = await vr.evaluate(() => !document.getElementById('rotate-prompt').hidden);
-    check(promptShown, 'a portrait screen is covered with a rotate prompt instead of the broken split view');
+    const rotated = await vr.evaluate(() => ({
+      bodyClass: document.body.classList.contains('force-rotate'),
+      trackerSign: window.__vr.cardboard.rotated,
+      aspect: window.__vr.camera.aspect,
+    }));
+    check(rotated.bodyClass, 'a still-portrait viewport gets the canvas rotated to fill it instead');
+    check(rotated.trackerSign !== 0, 'and the head tracking is told about the same turn',
+      `rotated ${rotated.trackerSign}`);
+    check(rotated.aspect > 1, 'so the camera still renders a landscape-shaped stereo pair',
+      `aspect ${rotated.aspect}`);
+
+    const flipSign = await vr.evaluate(() => window.__vr.cardboard.rotated);
+    await vr.click('#flip-cardboard');
+    await waitFrames(vr);
+    const flipped = await vr.evaluate(() => ({
+      bodyClass: document.body.classList.contains('force-rotate-flip'),
+      trackerSign: window.__vr.cardboard.rotated,
+    }));
+    check(flipped.bodyClass, 'flipping when the guessed direction is wrong turns the canvas the other way');
+    check(flipped.trackerSign === -flipSign,
+      'and takes the head tracking with it, or the two would fight each other',
+      `was ${flipSign}, now ${flipped.trackerSign}`);
 
     await vr.setViewportSize({ width: 1100, height: 760 });
     await waitFrames(vr);
-    const promptHiddenAgain = await vr.evaluate(() => document.getElementById('rotate-prompt').hidden);
-    check(promptHiddenAgain, 'and the prompt lifts the moment the screen turns landscape again');
+    const backToNormal = await vr.evaluate(() => ({
+      bodyClass: document.body.classList.contains('force-rotate'),
+      trackerSign: window.__vr.cardboard.rotated,
+    }));
+    check(!backToNormal.bodyClass && backToNormal.trackerSign === 0,
+      'and the rotation lifts the moment the screen turns landscape for real');
 
     // Head tracking. The first reading is taken as "straight ahead" whatever
     // the compass says, so a phone that happens to be pointing south-east

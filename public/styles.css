@@ -298,12 +298,11 @@ select { width: auto; padding-right: 34px; }
 }
 #hud .btn { min-height: 40px; width: auto; padding: 0 16px; }
 
-/* The only control that survives into viewer mode, and the only place it can
-   go: the strip down the middle, between the two lens views. */
-#exit-cardboard {
+/* The only controls that survive into viewer mode, and the only place they
+   can go: the strip down the middle, between the two lens views. */
+#exit-cardboard, #flip-cardboard {
   position: fixed;
   z-index: 12;
-  top: 6px;
   left: 50%;
   transform: translateX(-50%);
   width: auto;
@@ -312,45 +311,48 @@ select { width: auto; padding-right: 34px; }
   font-size: 0.82rem;
   opacity: 0.55;
 }
+#exit-cardboard { top: 6px; }
+#flip-cardboard { top: 46px; }
+
+/* Only relevant once the canvas is being force-rotated — CSS hides it the
+   rest of the time regardless of what JS forgets to toggle. */
+body:not(.force-rotate) #flip-cardboard { display: none; }
 
 /* Nothing scrolls or rubber-bands while the phone is strapped to a face. */
 body.in-cardboard { touch-action: none; overscroll-behavior: none; }
 
-/* Covers the split view rather than letting it show: in portrait each lens
-   half is tall and narrow, so the circular lens correction stretches into a
-   shape that fills the whole screen — one warped blob, not two lenses. */
-.rotate-prompt {
-  position: fixed;
-  inset: 0;
-  /* Below #exit-cardboard (12), not above it — covering the one way out
-     along with the broken view would trap whoever can't get the phone
-     rotated, or doesn't want to. */
-  z-index: 9;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  background: var(--bg);
-  color: var(--text);
-  text-align: center;
-  padding: 24px;
+/* The real viewport stayed portrait — rotation lock, most often, or iOS
+   ignoring the lock request outright — so rather than leaving two lens
+   circles each squeezed into a tall sliver, the canvas is rotated in place
+   to fill it as if the viewport really were landscape. #scene is sized to
+   the *swapped* dimensions (a landscape-shaped box even though the real
+   viewport is portrait) and spun 90° around its own centre, which is what
+   makes those two things trade places correctly instead of overflowing. */
+body.in-cardboard.force-rotate #scene {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center center;
 }
-.rotate-icon {
-  font-size: 2.6rem;
-  transform: rotate(90deg);
-  animation: rotate-prompt-turn 1.6s ease-in-out infinite;
+body.in-cardboard.force-rotate.force-rotate-flip #scene {
+  transform: translate(-50%, -50%) rotate(-90deg);
 }
-.rotate-prompt p { margin: 0; font-size: 1.05rem; font-weight: 650; }
-.rotate-prompt .rotate-sub {
-  font-size: 0.85rem;
-  font-weight: 450;
-  color: var(--text-dim);
+
+/* Rotating the canvas 90° turns the seam between the two lenses with it —
+   from a vertical line at top-centre to a horizontal one at left-centre, the
+   two eyes now stacked instead of side by side. Exit and Flip move to match,
+   or they end up sitting under a lens rather than between the two. */
+body.in-cardboard.force-rotate #exit-cardboard,
+body.in-cardboard.force-rotate #flip-cardboard {
+  top: 50%;
+  left: 6px;
+  transform: translateY(-50%);
 }
-@keyframes rotate-prompt-turn {
-  0%, 100% { transform: rotate(90deg); }
-  50% { transform: rotate(0deg); }
-}
+body.in-cardboard.force-rotate #flip-cardboard { top: calc(50% + 40px); }
 
 /* -------------------------------------------------------------- topbar */
 
