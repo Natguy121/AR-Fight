@@ -47,10 +47,9 @@
       down here first, then tap <b>Phone in a viewer</b> — the screen splits
       into two lenses, your head steers, and you pick things by looking at
       them. If your phone won't rotate to landscape on its own — rotation
-      lock, usually — it draws the two lenses turned to fit anyway, no
-      action needed; tap <b>Flip</b> in the seam between them if it looks
-      turned the wrong way. No viewer and no headset? Drag to look around
-      and click to play; the table works exactly the same.
+      lock, usually — the two lenses stack one above the other instead, no
+      action needed. No viewer and no headset? Drag to look around and click
+      to play; the table works exactly the same.
     </p>
 
     <p class="local-link">
@@ -69,13 +68,6 @@
 <!-- Parked in the seam between the two lens views, which is the one part of
      the screen that is not behind a lens once the phone is in the viewer. -->
 <button id="exit-cardboard" class="btn" type="button" hidden>Exit</button>
-
-<!-- Only shown once the page has had to rotate the canvas itself because the
-     real viewport stayed portrait (rotation lock, or iOS ignoring the lock
-     request) — there's no way to tell from script which way a given phone
-     got turned, so a wrong first guess is fixed here rather than guessed at
-     harder. Sits below Exit in the same seam. -->
-<button id="flip-cardboard" class="btn" type="button">Flip ⟲</button>
 
 <noscript>
   <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>

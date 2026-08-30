@@ -113,16 +113,15 @@ reticle on a key and a ring fills, or tap the screen if your viewer has one
 of those levers that pokes it. Two fingers re-centres you; **Exit** sits in
 the seam between the two lenses.
 
-The two lens views only line up side by side in landscape — most of these
-viewers hold the phone the long way round. The page tries to lock the screen
-that way itself, but iOS refuses that lock outright, and rotation lock
-defeats it on any platform, so the real viewport can easily stay portrait no
-matter which way the phone is actually held. Rather than depend on that lock
-working, the page rotates the canvas itself to fill a still-portrait
-viewport as if it were landscape, and turns the head tracking's sense of "up"
-by the same amount so the two stay in step — nothing to do, though **Flip**
-appears in the seam if it guessed the direction backwards, since there is no
-way to tell from script which way round a given phone was turned.
+A real two-lens viewer expects the two views side by side, which needs
+landscape — the page tries to lock the screen that way itself, but iOS
+refuses that lock outright, and rotation lock defeats it on any platform, so
+the real viewport can easily stay portrait no matter which way the phone is
+actually held. Rather than depend on that lock working, the two lens views
+stack one above the other instead whenever the real screen is still
+portrait — nothing to do, and no viewer to line up with either, so this is
+really only for the no-viewer, drag-to-look-around case below on a phone
+that won't rotate.
 
 The lens correction is the part that has to be right. Those lenses magnify,
 and magnifying lenses pincushion — straight lines bow inward, worse toward
