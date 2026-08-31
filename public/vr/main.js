@@ -212,7 +212,10 @@ for (const index of [0, 1]) {
   const controller = renderer.xr.getController(index);
   controller.add(rayLine());
   controller.userData.isController = true;
-  controller.addEventListener('selectstart', () => select(rayFromController(controller)));
+  controller.addEventListener('selectstart', () => {
+    completeCalibration('Calibrated — that trigger presses in VR');
+    select(rayFromController(controller));
+  });
   scene.add(controller);
   controllers.push(controller);
 }
@@ -286,6 +289,7 @@ const look = new THREE.Euler(0, 0, 0, 'YXZ');
 
 const canvas = renderer.domElement;
 canvas.addEventListener('pointerdown', (e) => {
+  completeCalibration('Calibrated — the screen presses in VR');
   dragging = true;
   dragged = false;
   lastX = e.clientX;
@@ -623,6 +627,7 @@ setupXR();
 // ---------------------------------------------------------------- gamepad
 
 let lastRightTrigger = 0;
+let lastAnyGamepadButton = false;
 let calibrating = false;
 const gamepadToast = $('gamepad-toast');
 
@@ -633,7 +638,15 @@ function showGamepadToast(text) {
 
 function startGamepadCalibration() {
   calibrating = true;
-  showGamepadToast('Press the right trigger to calibrate');
+  showGamepadToast('Press the screen, a gamepad button, or a VR trigger to calibrate');
+}
+
+/** Any input path — screen tap, gamepad button, VR trigger — can confirm calibration. */
+function completeCalibration(message) {
+  if (!calibrating) return;
+  calibrating = false;
+  showGamepadToast(message);
+  setTimeout(() => { gamepadToast.hidden = true; }, 2000);
 }
 
 window.addEventListener('gamepadconnected', () => {
@@ -650,12 +663,13 @@ function checkGamepadInput() {
   for (const gamepad of gamepads) {
     if (!gamepad) continue;
     const rightTrigger = gamepad.axes[5] ?? 0;
+    const anyButton = gamepad.buttons.some((b) => b.pressed);
+    if (anyButton && !lastAnyGamepadButton) {
+      completeCalibration('Calibrated — that button presses in VR');
+    }
+    lastAnyGamepadButton = anyButton;
+
     if (rightTrigger > 0.5 && lastRightTrigger <= 0.5) {
-      if (calibrating) {
-        calibrating = false;
-        showGamepadToast('Calibrated — right trigger presses in VR');
-        setTimeout(() => { gamepadToast.hidden = true; }, 2000);
-      }
       if (renderer.xr.isPresenting && controllers.length > 0) {
         select(rayFromController(controllers[0]));
       } else if (pointerActive) {
