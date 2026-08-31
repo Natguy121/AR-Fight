@@ -611,6 +611,23 @@ setupXR();
 // ---------------------------------------------------------------- gamepad
 
 let lastRightTrigger = 0;
+let calibrating = false;
+const gamepadToast = $('gamepad-toast');
+
+function showGamepadToast(text) {
+  gamepadToast.textContent = text;
+  gamepadToast.hidden = false;
+}
+
+window.addEventListener('gamepadconnected', () => {
+  calibrating = true;
+  showGamepadToast('Controller connected — press the right trigger to calibrate');
+});
+
+window.addEventListener('gamepaddisconnected', () => {
+  calibrating = false;
+  gamepadToast.hidden = true;
+});
 
 function checkGamepadInput() {
   const gamepads = navigator.getGamepads?.() ?? [];
@@ -618,6 +635,11 @@ function checkGamepadInput() {
     if (!gamepad) continue;
     const rightTrigger = gamepad.axes[5] ?? 0;
     if (rightTrigger > 0.5 && lastRightTrigger <= 0.5) {
+      if (calibrating) {
+        calibrating = false;
+        showGamepadToast('Calibrated — right trigger presses in VR');
+        setTimeout(() => { gamepadToast.hidden = true; }, 2000);
+      }
       if (renderer.xr.isPresenting && controllers.length > 0) {
         select(rayFromController(controllers[0]));
       } else if (pointerActive) {
