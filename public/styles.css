@@ -347,6 +347,24 @@ body.in-cardboard { touch-action: none; overscroll-behavior: none; }
   word-break: break-word;
 }
 
+/* A fixed point at the exact centre of the real screen — not part of the 3D
+   scene, so nothing about WebGL, the lens warp, or the barrel distortion
+   can move it. Above the canvas but below the crash overlay: a crash is the
+   more important thing to see if both happen at once. */
+.center-dot {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #ff2d2d;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+  z-index: 998;
+  pointer-events: none;
+}
+
 /* The real viewport stayed portrait — rotation lock, most often, or iOS
    ignoring the lock request outright — so rather than leaving two lens
    circles each squeezed into a tall sliver, the canvas is rotated in place

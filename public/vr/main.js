@@ -712,6 +712,7 @@ setupXR();
 const cardboardButton = $('enter-cardboard');
 const exitCardboardButton = $('exit-cardboard');
 const flipButton = $('flip-cardboard');
+const centerDot = $('center-dot');
 
 function setCardboardChrome(on) {
   // While the phone is in a viewer the page's own controls are behind a lens
@@ -720,6 +721,7 @@ function setCardboardChrome(on) {
   // the phone is back in your hand.
   $('hud').hidden = on;
   exitCardboardButton.hidden = !on;
+  centerDot.hidden = !on;
   document.body.classList.toggle('in-cardboard', on);
   // Whether the canvas actually needs rotating is only known once the real
   // viewport size is in hand, which resize() reads fresh every time.

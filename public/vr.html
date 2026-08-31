@@ -87,6 +87,13 @@
   <button id="crash-exit" class="btn" type="button">Exit</button>
 </div>
 
+<!-- A plain HTML dot, not part of the 3D scene at all — a fixed point at
+     the exact centre of the real screen, independent of anything WebGL is
+     doing. If this doesn't look centred, the problem is the screen/CSS
+     layer; if it does but the picture around it still looks wrong, the
+     problem is inside the 3D rendering. -->
+<div id="center-dot" class="center-dot" hidden></div>
+
 <noscript>
   <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
   <p>This game needs JavaScript.</p></div></div>
