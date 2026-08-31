@@ -177,6 +177,30 @@ calibrateButton.mesh.position.set(0.44, 0.92, -0.64);
 calibrateButton.mesh.rotation.set(-0.35, -0.45, 0);
 ui.add(calibrateButton.mesh);
 
+// Gamepad calibration only matters in a real headset, where a paired
+// controller stands in for the hand controllers. On a phone in 3D mode
+// touch already works, so the button stays out of the way entirely there.
+const modeBadge = $('mode-badge');
+
+// A phone screen is small, so the same panels that read fine in a headset
+// eat a lot of the seated players behind them — and a fingertip is a much
+// blunter pointer than a controller ray. In 3D mode (no headset) the
+// remaining buttons get bigger to hit and more transparent to see through;
+// full headset presence gets them back at normal size and opacity.
+function updateViewMode() {
+  const inHeadset = renderer.xr.isPresenting;
+  modeBadge.hidden = inHeadset;
+  const opacity = inHeadset ? 1 : 0.6;
+  const scale = inHeadset ? 1 : 1.3;
+  for (const button of [actionButton, leaveButton]) {
+    button.panel.material.opacity = opacity;
+    button.mesh.scale.setScalar(scale);
+  }
+  if (state) renderWorld();
+}
+renderer.xr.addEventListener('sessionstart', updateViewMode);
+renderer.xr.addEventListener('sessionend', updateViewMode);
+
 // The keyboard is the one thing that stays big: it is sized to be *typed on*,
 // so its width is set by where your hands comfortably reach. It sits low and
 // tilted back, in the space over the near edge of the table where a real one
@@ -384,7 +408,7 @@ function renderWorld() {
     visible: canDeal && !keyboard.visible,
   });
   leaveButton.set('Leave the table');
-  calibrateButton.set('Calibrate');
+  calibrateButton.set('Calibrate', { visible: renderer.xr.isPresenting });
 
   // Open the keyboard when the table is waiting on you, and — importantly —
   // only when the *reason* changes. Re-showing it on every state message would
@@ -651,6 +675,11 @@ function completeCalibration(message) {
 }
 
 window.addEventListener('gamepadconnected', (e) => {
+  // Calibration is for a headset player's controller, not a phone's touch
+  // input — skip the auto-prompt in 3D mode so it can't add to the clutter
+  // the phone layout is trying to cut down on. The in-world Calibrate
+  // button (also headset-only) still starts it on request.
+  if (!renderer.xr.isPresenting) return;
   startGamepadCalibration(e.gamepad);
 });
 
@@ -754,4 +783,5 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
 });
 
+updateViewMode();
 net.connect();
