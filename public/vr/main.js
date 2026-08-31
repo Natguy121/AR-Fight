@@ -167,6 +167,16 @@ leaveButton.mesh.position.set(0.44, 0.84, -0.64);
 leaveButton.mesh.rotation.set(-0.35, -0.45, 0);
 ui.add(leaveButton.mesh);
 
+const calibrateButton = new Button({
+  width: 0.22,
+  height: 0.062,
+  tone: 'quiet',
+  onSelect: () => startGamepadCalibration(),
+});
+calibrateButton.mesh.position.set(0.44, 0.92, -0.64);
+calibrateButton.mesh.rotation.set(-0.35, -0.45, 0);
+ui.add(calibrateButton.mesh);
+
 // The keyboard is the one thing that stays big: it is sized to be *typed on*,
 // so its width is set by where your hands comfortably reach. It sits low and
 // tilted back, in the space over the near edge of the table where a real one
@@ -225,6 +235,7 @@ function targets() {
   if (keyboard.visible) list.push(keyboard.face.mesh);
   if (actionButton.mesh.visible) list.push(actionButton.mesh);
   if (leaveButton.mesh.visible) list.push(leaveButton.mesh);
+  if (calibrateButton.mesh.visible) list.push(calibrateButton.mesh);
   list.push(...seating.voteTargets);
   return list;
 }
@@ -369,6 +380,7 @@ function renderWorld() {
     visible: canDeal && !keyboard.visible,
   });
   leaveButton.set('Leave the table');
+  calibrateButton.set('Calibrate');
 
   // Open the keyboard when the table is waiting on you, and — importantly —
   // only when the *reason* changes. Re-showing it on every state message would
@@ -619,9 +631,13 @@ function showGamepadToast(text) {
   gamepadToast.hidden = false;
 }
 
-window.addEventListener('gamepadconnected', () => {
+function startGamepadCalibration() {
   calibrating = true;
-  showGamepadToast('Controller connected — press the right trigger to calibrate');
+  showGamepadToast('Press the right trigger to calibrate');
+}
+
+window.addEventListener('gamepadconnected', () => {
+  startGamepadCalibration();
 });
 
 window.addEventListener('gamepaddisconnected', () => {
