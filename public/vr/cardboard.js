@@ -42,8 +42,16 @@ const DEFAULT_DISTORTION = { k1: 0.18, k2: 0.16 };
  * outside the lens disc. Render at the FOV you want to see and the result is
  * a tunnel; this is the over-render that makes the displayed view come out
  * roughly life-sized.
+ *
+ * 150 is near the practical ceiling, not a round number picked for looks:
+ * this is a true rectilinear projection, not a fisheye one, and rectilinear
+ * projections inherently stretch geometry near the edges of a wide frame —
+ * the barrel pass corrects for the *lens*, not for that. 158 already shows
+ * it (streaking on the floor and ceiling toward the sides); by 170 the table
+ * has shrunk to a speck and the room is barely recognisable. Checked by eye
+ * with `npm run smoke:vr --shots`, not by a number that happens to compile.
  */
-const CARDBOARD_FOV = 120;
+const CARDBOARD_FOV = 150;
 
 const WARP_VERTEX = /* glsl */`
   varying vec2 vUv;
