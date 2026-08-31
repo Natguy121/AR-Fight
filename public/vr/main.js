@@ -167,6 +167,22 @@ leaveButton.mesh.position.set(0.44, 0.84, -0.64);
 leaveButton.mesh.rotation.set(-0.35, -0.45, 0);
 ui.add(leaveButton.mesh);
 
+// The flat "⋮" HUD menu is an HTML overlay — it never reaches a headset, or
+// a phone held up to a lens viewer, because WebXR only presents the canvas
+// in stereo, not the surrounding page. This is that same control's world
+// counterpart: small enough not to compete with the table for space, but
+// actually visible through the lenses, so calibration stays reachable
+// without ever putting the headset down.
+const worldCalibrateDot = new Button({
+  width: 0.055,
+  height: 0.055,
+  tone: 'quiet',
+  onSelect: () => startGamepadCalibration(),
+});
+worldCalibrateDot.mesh.position.set(0.44, 0.92, -0.64);
+worldCalibrateDot.mesh.rotation.set(-0.35, -0.45, 0);
+ui.add(worldCalibrateDot.mesh);
+
 const modeBadge = $('mode-badge');
 
 // A phone screen is small, so the same panels that read fine in a headset
@@ -249,6 +265,7 @@ function targets() {
   if (keyboard.visible) list.push(keyboard.face.mesh);
   if (actionButton.mesh.visible) list.push(actionButton.mesh);
   if (leaveButton.mesh.visible) list.push(leaveButton.mesh);
+  if (worldCalibrateDot.mesh.visible) list.push(worldCalibrateDot.mesh);
   list.push(...seating.voteTargets);
   return list;
 }
@@ -394,6 +411,7 @@ function renderWorld() {
     visible: canDeal && !keyboard.visible,
   });
   leaveButton.set('Leave the table');
+  worldCalibrateDot.set('⋮', { visible: renderer.xr.isPresenting });
 
   // Open the keyboard when the table is waiting on you, and — importantly —
   // only when the *reason* changes. Re-showing it on every state message would
