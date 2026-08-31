@@ -608,6 +608,26 @@ async function setupXR() {
 }
 setupXR();
 
+// ---------------------------------------------------------------- gamepad
+
+let lastRightTrigger = 0;
+
+function checkGamepadInput() {
+  const gamepads = navigator.getGamepads?.() ?? [];
+  for (const gamepad of gamepads) {
+    if (!gamepad) continue;
+    const rightTrigger = gamepad.axes[5] ?? 0;
+    if (rightTrigger > 0.5 && lastRightTrigger <= 0.5) {
+      if (renderer.xr.isPresenting && controllers.length > 0) {
+        select(rayFromController(controllers[0]));
+      } else if (pointerActive) {
+        select(rayFromPointer());
+      }
+    }
+    lastRightTrigger = rightTrigger;
+  }
+}
+
 // ------------------------------------------------------------------- loop
 
 /**
@@ -651,6 +671,7 @@ window.__vr = {
 };
 
 renderer.setAnimationLoop(() => {
+  checkGamepadInput();
   let hit = null;
   if (renderer.xr.isPresenting) {
     for (const controller of controllers) {
