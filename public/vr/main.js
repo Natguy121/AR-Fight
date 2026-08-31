@@ -636,9 +636,10 @@ function showGamepadToast(text) {
   gamepadToast.hidden = false;
 }
 
-function startGamepadCalibration() {
+function startGamepadCalibration(gamepad) {
   calibrating = true;
-  showGamepadToast('Press the screen, a gamepad button, or a VR trigger to calibrate');
+  const name = gamepad ? ` (${gamepad.id}, ${gamepad.mapping || 'non-standard'} mapping)` : '';
+  showGamepadToast(`Press the screen, a gamepad button, or a VR trigger to calibrate${name}`);
 }
 
 /** Any input path — screen tap, gamepad button, VR trigger — can confirm calibration. */
@@ -649,8 +650,8 @@ function completeCalibration(message) {
   setTimeout(() => { gamepadToast.hidden = true; }, 2000);
 }
 
-window.addEventListener('gamepadconnected', () => {
-  startGamepadCalibration();
+window.addEventListener('gamepadconnected', (e) => {
+  startGamepadCalibration(e.gamepad);
 });
 
 window.addEventListener('gamepaddisconnected', () => {
@@ -658,12 +659,26 @@ window.addEventListener('gamepaddisconnected', () => {
   gamepadToast.hidden = true;
 });
 
+/**
+ * The right trigger, under the W3C Standard Gamepad mapping, is the analog
+ * button at index 7 — not an axis. `axes[5]` is an XInput/raw-HID convention
+ * that some non-standard-mapped devices happen to expose, so it's kept only
+ * as a fallback for a gamepad the browser didn't map to "standard".
+ */
+function rightTriggerValue(gamepad) {
+  const button = gamepad.buttons[7];
+  if (button) return button.value ?? (button.pressed ? 1 : 0);
+  return gamepad.axes[5] ?? 0;
+}
+
 function checkGamepadInput() {
   const gamepads = navigator.getGamepads?.() ?? [];
   for (const gamepad of gamepads) {
     if (!gamepad) continue;
-    const rightTrigger = gamepad.axes[5] ?? 0;
-    const anyButton = gamepad.buttons.some((b) => b.pressed);
+    const rightTrigger = rightTriggerValue(gamepad);
+    // Some non-standard-mapped gamepads leave `.pressed` false while still
+    // reporting a nonzero `.value` — check both so a real press isn't missed.
+    const anyButton = gamepad.buttons.some((b) => b.pressed || b.value > 0.5);
     if (anyButton && !lastAnyGamepadButton) {
       completeCalibration('Calibrated — that button presses in VR');
     }
