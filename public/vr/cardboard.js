@@ -36,6 +36,17 @@ import * as THREE from '../vendor/three.module.js';
 const DEFAULT_DISTORTION = { k1: 0.18, k2: 0.16 };
 
 /**
+ * How much of each half of the screen the visible lens circle actually
+ * fills, as a fraction of the previous (1.0 = touching the midpoint of
+ * each edge, the original design). 0.1 leaves a circle a tenth that size,
+ * centred in a much larger field of black — this only changes what gets
+ * masked out by the vignette in the warp pass below, not the barrel
+ * distortion math or the camera's own field of view, which are separate
+ * knobs (CARDBOARD_FOV above, DEFAULT_DISTORTION).
+ */
+const CIRCLE_SIZE = 0.1;
+
+/**
  * Much wider than the flat-screen view, for two compounding reasons: each eye
  * only gets half the screen, and the barrel pass samples progressively
  * further out toward the edges, so a good third of what is rendered ends up
@@ -75,6 +86,7 @@ const WARP_FRAGMENT = /* glsl */`
   uniform float uEyeOffset;  // 0.0 for the left half of the target, 0.5 for the right
   uniform float k1;
   uniform float k2;
+  uniform float uCircleSize; // 1.0 = the original design (touching each edge's midpoint)
 
   void main() {
     vec2 centred = vUv - 0.5;
@@ -86,7 +98,7 @@ const WARP_FRAGMENT = /* glsl */`
     if (source.x >= 0.0 && source.x <= 1.0 && source.y >= 0.0 && source.y <= 1.0) {
       rgb = texture2D(tEyes, vec2(source.x * 0.5 + uEyeOffset, source.y)).rgb;
       float r = length(centred) * 2.0;
-      rgb *= smoothstep(1.0, 0.80, r);
+      rgb *= smoothstep(1.0 * uCircleSize, 0.80 * uCircleSize, r);
     }
     gl_FragColor = vec4(rgb, 1.0);
 
@@ -247,6 +259,7 @@ export class Cardboard {
           uEyeOffset: { value: offset },
           k1: { value: DEFAULT_DISTORTION.k1 },
           k2: { value: DEFAULT_DISTORTION.k2 },
+          uCircleSize: { value: CIRCLE_SIZE },
         },
       });
       // Each quad covers its own half of clip space; the vertex shader passes
