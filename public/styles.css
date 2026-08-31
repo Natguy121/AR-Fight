@@ -365,6 +365,26 @@ body.in-cardboard { touch-action: none; overscroll-behavior: none; }
   pointer-events: none;
 }
 
+/* Read the numbers, screenshot, done — this is not meant to be legible at a
+   glance while wearing a viewer, just recoverable afterwards. */
+.debug-info {
+  position: fixed;
+  left: 6px;
+  bottom: 6px;
+  z-index: 998;
+  margin: 0;
+  padding: 4px 7px;
+  max-width: min(70vw, 420px);
+  background: rgba(0, 0, 0, 0.72);
+  color: #8fffb0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.62rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+}
+
 /* The real viewport stayed portrait — rotation lock, most often, or iOS
    ignoring the lock request outright — so rather than leaving two lens
    circles each squeezed into a tall sliver, the canvas is rotated in place

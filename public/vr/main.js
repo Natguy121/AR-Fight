@@ -75,6 +75,18 @@ renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 $('scene').appendChild(renderer.domElement);
 
+// A shader that fails to compile or link is exactly the kind of failure
+// that doesn't throw a catchable JS exception — three.js logs it to the
+// console and carries on with an invalid program, which on screen looks
+// like "nothing draws here" rather than a crash. There is no console on a
+// phone, so this is the only way that specific failure would ever surface.
+renderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
+  const vertexLog = gl.getShaderInfoLog(vertexShader);
+  const fragmentLog = gl.getShaderInfoLog(fragmentShader);
+  const programLog = gl.getProgramInfoLog(program);
+  crash(`Shader failed to compile/link:\n\nvertex: ${vertexLog}\n\nfragment: ${fragmentLog}\n\nprogram: ${programLog}`);
+};
+
 const cardboard = new Cardboard(renderer, camera);
 // Which way to rotate the canvas when the real viewport is still portrait —
 // flipped by the on-screen button if the guess is backwards for how this
@@ -713,6 +725,7 @@ const cardboardButton = $('enter-cardboard');
 const exitCardboardButton = $('exit-cardboard');
 const flipButton = $('flip-cardboard');
 const centerDot = $('center-dot');
+const debugInfo = $('debug-info');
 
 function setCardboardChrome(on) {
   // While the phone is in a viewer the page's own controls are behind a lens
@@ -722,6 +735,7 @@ function setCardboardChrome(on) {
   $('hud').hidden = on;
   exitCardboardButton.hidden = !on;
   centerDot.hidden = !on;
+  debugInfo.hidden = !on;
   document.body.classList.toggle('in-cardboard', on);
   // Whether the canvas actually needs rotating is only known once the real
   // viewport size is in hand, which resize() reads fresh every time.
@@ -854,6 +868,29 @@ function updateDwell(hit) {
   }
 }
 
+/**
+ * Everything that would matter to reproducing "nothing threw, but the
+ * picture is wrong anyway" — target existing at all is the one most worth
+ * having, since a WebGLRenderTarget that silently failed to bind would show
+ * up as a raw undistorted eye render on screen instead of the warped pair,
+ * with no exception anywhere to catch.
+ */
+function updateDebugInfo() {
+  const gl = renderer.getContext();
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unavailable';
+  const buf = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const target = cardboard.target;
+  debugInfo.textContent = [
+    `cardboard.active=${cardboard.active} rotated=${cardboard.rotated}`,
+    `camera fov=${camera.fov} aspect=${camera.aspect.toFixed(3)}`,
+    `drawingBuffer=${buf.x}x${buf.y} dpr=${window.devicePixelRatio}`,
+    `target=${target ? `${target.width}x${target.height}` : 'null'}`,
+    `gl=${gl.getParameter(gl.VERSION)} gpu=${gpu}`,
+    `ua=${navigator.userAgent}`,
+  ].join('\n');
+}
+
 renderer.setAnimationLoop(() => {
   // Some browsers quietly stop calling this at all once it throws once,
   // rather than letting the error bubble to window.onerror — which reads
@@ -881,8 +918,12 @@ renderer.setAnimationLoop(() => {
 
     seating.faceCamera(camera);
 
-    if (cardboard.active) cardboard.render(scene);
-    else renderer.render(scene, camera);
+    if (cardboard.active) {
+      cardboard.render(scene);
+      updateDebugInfo();
+    } else {
+      renderer.render(scene, camera);
+    }
   } catch (err) {
     crash(err?.stack ?? String(err));
   }
