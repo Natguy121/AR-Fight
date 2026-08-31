@@ -53,20 +53,6 @@ const DEFAULT_DISTORTION = { k1: 0.18, k2: 0.16 };
  */
 const CARDBOARD_FOV = 150;
 
-/**
- * Each eye's own patch of the screen, in NDC (-1 to 1 on both axes — the
- * whole screen, x left-to-right and y bottom-to-top). No longer required to
- * be half the screen each, or even the same shape: the top eye sits in the
- * top-left corner, touching the screen's own top edge, and the bottom eye
- * sits in the bottom-left corner, touching the bottom edge — stacked, both
- * over on the left, with most of the screen left black between and beside
- * them.
- */
-const EYE_REGIONS = [
-  { x: { left: -1.0, right: -0.6 }, y: { bottom: 0.6, top: 1.0 } }, // top eye
-  { x: { left: -1.0, right: -0.6 }, y: { bottom: -1.0, top: -0.6 } }, // bottom eye
-];
-
 const WARP_VERTEX = /* glsl */`
   varying vec2 vUv;
   void main() {
@@ -89,7 +75,6 @@ const WARP_FRAGMENT = /* glsl */`
   uniform float uEyeOffset;  // 0.0 for the left half of the target, 0.5 for the right
   uniform float k1;
   uniform float k2;
-  uniform float uAspect; // this eye's own patch of the screen, pixel width / pixel height
 
   void main() {
     vec2 centred = vUv - 0.5;
@@ -100,13 +85,7 @@ const WARP_FRAGMENT = /* glsl */`
     vec3 rgb = vec3(0.0);
     if (source.x >= 0.0 && source.x <= 1.0 && source.y >= 0.0 && source.y <= 1.0) {
       rgb = texture2D(tEyes, vec2(source.x * 0.5 + uEyeOffset, source.y)).rgb;
-      // uAspect corrects for this eye's patch not necessarily being as wide
-      // as it is tall: equal steps in vUv.x and vUv.y are not equal steps in
-      // actual screen pixels once it isn't, and without correcting for that
-      // the vignette is really an ellipse stretched to match the patch's own
-      // shape, not the circle it is meant to be.
-      vec2 vignetteCentred = vec2(centred.x * uAspect, centred.y);
-      float r = length(vignetteCentred) * 2.0;
+      float r = length(centred) * 2.0;
       rgb *= smoothstep(1.0, 0.80, r);
     }
     gl_FragColor = vec4(rgb, 1.0);
@@ -268,25 +247,14 @@ export class Cardboard {
           uEyeOffset: { value: offset },
           k1: { value: DEFAULT_DISTORTION.k1 },
           k2: { value: DEFAULT_DISTORTION.k2 },
-          uAspect: { value: 1.0 }, // corrected to the real screen size on every render()
         },
       });
-      // Each quad covers its own patch of clip space (EYE_REGIONS above);
-      // the vertex shader passes position straight through, so these are
-      // already in NDC.
-      const region = EYE_REGIONS[index];
-      const widthNDC = region.x.right - region.x.left;
-      const heightNDC = region.y.top - region.y.bottom;
-      const geometry = new THREE.PlaneGeometry(widthNDC, heightNDC);
-      geometry.translate((region.x.left + region.x.right) / 2, (region.y.bottom + region.y.top) / 2, 0);
+      // Each quad covers its own half of clip space; the vertex shader passes
+      // position straight through, so these are already in NDC.
+      const geometry = new THREE.PlaneGeometry(1, 2);
+      geometry.translate(index === 0 ? -0.5 : 0.5, 0, 0);
       const quad = new THREE.Mesh(geometry, material);
       quad.frustumCulled = false;
-      // Out of the 2 NDC units each axis spans — render() reads these back
-      // to work out uAspect against whatever the real screen's own pixel
-      // dimensions turn out to be, which can change (resize, rotation) in a
-      // way these fixed values never do.
-      quad.userData.regionWidthNDC = widthNDC;
-      quad.userData.regionHeightNDC = heightNDC;
       this.warpScene.add(quad);
       this.eyeQuads.push(quad);
     }
@@ -298,7 +266,6 @@ export class Cardboard {
     this._gazeDirection = new THREE.Vector3();
     this._gazeOrigin = new THREE.Vector3();
     this._progress = -1;
-    this._screenSize = new THREE.Vector2();
   }
 
   /** A ring in the middle of your view; it fills as you hold your gaze. */
@@ -467,22 +434,6 @@ export class Cardboard {
     for (const quad of this.eyeQuads) quad.material.uniforms.tEyes.value = this.target.texture;
   }
 
-  /**
-   * A patch's own shape need not match the whole screen's — EYE_REGIONS's
-   * patches deliberately don't — and the vignette shader corrects for that
-   * with uAspect, but only if it is kept current against whatever the real
-   * screen's own pixel dimensions actually are right now, which a value set
-   * once at construction can't be (resize, rotation).
-   */
-  _updateAspect() {
-    const size = this.renderer.getDrawingBufferSize(this._screenSize);
-    for (const quad of this.eyeQuads) {
-      const pixelWidth = (quad.userData.regionWidthNDC / 2) * size.x;
-      const pixelHeight = (quad.userData.regionHeightNDC / 2) * size.y;
-      quad.material.uniforms.uAspect.value = pixelWidth / pixelHeight;
-    }
-  }
-
   /** Track the phone. Call once a frame before rendering. */
   update() {
     if (!this.active) return;
@@ -492,7 +443,6 @@ export class Cardboard {
   /** Render both eyes into one target, then un-distort each half to screen. */
   render(scene) {
     this._resizeTarget();
-    this._updateAspect();
     const { renderer, target } = this;
     const width = target.width;
     const height = target.height;
