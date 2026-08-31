@@ -47,6 +47,31 @@ const DEFAULT_DISTORTION = { k1: 0.18, k2: 0.16 };
 const CIRCLE_SIZE = 0.1;
 
 /**
+ * Each eye's own slice of the screen, in NDC x (-1 the left edge of the
+ * whole screen, 1 the right edge) — no longer required to be exactly half
+ * each and touching at the middle, the original design. Bringing the two
+ * circles close together needs this: a quad can only ever show its circle
+ * somewhere within its own slice, so if both slices still spanned half the
+ * screen each, "close together" could only ever mean "both pinned near the
+ * middle," never "both over on the left." Shrinking and shifting the slices
+ * themselves is what actually moves the *pair*.
+ */
+const EYE_REGIONS = [
+  { left: -1.0, right: -0.6 }, // left eye
+  { left: -0.6, right: -0.2 }, // right eye — touching the left eye's slice
+];
+
+/**
+ * Where the circle sits within its own eye's slice, in that slice's local
+ * UV (0 = that slice's left edge, 1 = its right edge). Both pulled toward
+ * the shared boundary between the two slices above, which is what actually
+ * closes the gap between the two visible circles rather than just the gap
+ * between the slices, which the compounding barrel-distortion crop, being
+ * always centred on 0.5 regardless of this, doesn't otherwise reflect.
+ */
+const CIRCLE_CENTER_X = [0.8, 0.2];
+
+/**
  * Much wider than the flat-screen view, for two compounding reasons: each eye
  * only gets half the screen, and the barrel pass samples progressively
  * further out toward the edges, so a good third of what is rendered ends up
@@ -87,6 +112,8 @@ const WARP_FRAGMENT = /* glsl */`
   uniform float k1;
   uniform float k2;
   uniform float uCircleSize; // 1.0 = the original design (touching each edge's midpoint)
+  uniform float uCircleCenterX; // 0.5 = centred in this slice; smaller pulls the circle left
+  uniform float uAspect; // this eye's own slice, pixel width / pixel height
 
   void main() {
     vec2 centred = vUv - 0.5;
@@ -97,7 +124,16 @@ const WARP_FRAGMENT = /* glsl */`
     vec3 rgb = vec3(0.0);
     if (source.x >= 0.0 && source.x <= 1.0 && source.y >= 0.0 && source.y <= 1.0) {
       rgb = texture2D(tEyes, vec2(source.x * 0.5 + uEyeOffset, source.y)).rgb;
-      float r = length(centred) * 2.0;
+      // The vignette's own centre is separate from centred above: moving it
+      // shifts which part of the already-sampled, already-distorted image
+      // sits inside the visible circle, rather than re-centring the
+      // distortion itself. The uAspect factor on x is needed because this
+      // eye's slice is no longer necessarily as wide as it is tall — equal
+      // steps in vUv.x and vUv.y are not equal steps in actual screen
+      // pixels once it isn't, and without correcting for that the "circle"
+      // is really an ellipse stretched to match whatever shape the slice is.
+      vec2 vignetteCentred = vec2((vUv.x - uCircleCenterX) * uAspect, vUv.y - 0.5);
+      float r = length(vignetteCentred) * 2.0;
       rgb *= smoothstep(1.0 * uCircleSize, 0.80 * uCircleSize, r);
     }
     gl_FragColor = vec4(rgb, 1.0);
@@ -260,14 +296,24 @@ export class Cardboard {
           k1: { value: DEFAULT_DISTORTION.k1 },
           k2: { value: DEFAULT_DISTORTION.k2 },
           uCircleSize: { value: CIRCLE_SIZE },
+          uCircleCenterX: { value: CIRCLE_CENTER_X[index] },
+          uAspect: { value: 1.0 }, // corrected to the real screen size on every render()
         },
       });
-      // Each quad covers its own half of clip space; the vertex shader passes
-      // position straight through, so these are already in NDC.
-      const geometry = new THREE.PlaneGeometry(1, 2);
-      geometry.translate(index === 0 ? -0.5 : 0.5, 0, 0);
+      // Each quad covers its own slice of clip space (EYE_REGIONS above);
+      // the vertex shader passes position straight through, so these are
+      // already in NDC.
+      const region = EYE_REGIONS[index];
+      const width = region.right - region.left;
+      const geometry = new THREE.PlaneGeometry(width, 2);
+      geometry.translate((region.left + region.right) / 2, 0, 0);
       const quad = new THREE.Mesh(geometry, material);
       quad.frustumCulled = false;
+      // NDC width, out of the 2 units the full screen spans — render() reads
+      // this back to work out uAspect against whatever the real screen's own
+      // pixel dimensions turn out to be, which can change (resize, rotation)
+      // in a way this fixed value never does.
+      quad.userData.regionWidthNDC = width;
       this.warpScene.add(quad);
       this.eyeQuads.push(quad);
     }
@@ -279,6 +325,7 @@ export class Cardboard {
     this._gazeDirection = new THREE.Vector3();
     this._gazeOrigin = new THREE.Vector3();
     this._progress = -1;
+    this._screenSize = new THREE.Vector2();
   }
 
   /** A ring in the middle of your view; it fills as you hold your gaze. */
@@ -447,6 +494,21 @@ export class Cardboard {
     for (const quad of this.eyeQuads) quad.material.uniforms.tEyes.value = this.target.texture;
   }
 
+  /**
+   * A quad's own slice need not be square, and EYE_REGIONS's slices
+   * deliberately aren't — the vignette shader corrects for that with
+   * uAspect, but only if it is kept current against whatever the real
+   * screen's own pixel dimensions actually are right now, which a fixed
+   * value set once at construction can't be (resize, rotation).
+   */
+  _updateAspect() {
+    const size = this.renderer.getDrawingBufferSize(this._screenSize);
+    for (const quad of this.eyeQuads) {
+      const pixelWidth = (quad.userData.regionWidthNDC / 2) * size.x;
+      quad.material.uniforms.uAspect.value = pixelWidth / size.y;
+    }
+  }
+
   /** Track the phone. Call once a frame before rendering. */
   update() {
     if (!this.active) return;
@@ -456,6 +518,7 @@ export class Cardboard {
   /** Render both eyes into one target, then un-distort each half to screen. */
   render(scene) {
     this._resizeTarget();
+    this._updateAspect();
     const { renderer, target } = this;
     const width = target.width;
     const height = target.height;
