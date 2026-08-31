@@ -471,6 +471,18 @@ async function main() {
     check(rotated.aspect > 1, 'so the camera still renders a landscape-shaped stereo pair',
       `aspect ${rotated.aspect}`);
 
+    // The centre dot lives outside #scene specifically so that rotating
+    // #scene can never carry it along — this is what actually proves that,
+    // rather than just trusting the DOM structure to stay that way.
+    const dotRect = await vr.evaluate(() => document.getElementById('center-dot').getBoundingClientRect());
+    const dotCentre = { x: dotRect.x + dotRect.width / 2, y: dotRect.y + dotRect.height / 2 };
+    check(
+      Math.abs(dotCentre.x - 200) < 1 && Math.abs(dotCentre.y - 400) < 1,
+      'the centre dot stays anchored to the real screen centre even while #scene is rotated',
+      `dot centre ${JSON.stringify(dotCentre)}, expected ~(200, 400)`,
+    );
+    if (SHOTS) await vr.screenshot({ path: path.join(SHOT_DIR, 'vr-7-rotated.png') });
+
     // Safari's own vh/vw are sized against the largest the viewport could
     // ever be with its browser chrome fully collapsed, not what's actually
     // visible — a box built from 100vh/100vw can end up taller than the real
