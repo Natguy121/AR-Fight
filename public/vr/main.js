@@ -167,16 +167,6 @@ leaveButton.mesh.position.set(0.44, 0.84, -0.64);
 leaveButton.mesh.rotation.set(-0.35, -0.45, 0);
 ui.add(leaveButton.mesh);
 
-const calibrateButton = new Button({
-  width: 0.22,
-  height: 0.062,
-  tone: 'quiet',
-  onSelect: () => startGamepadCalibration(),
-});
-calibrateButton.mesh.position.set(0.44, 0.94, -0.64);
-calibrateButton.mesh.rotation.set(-0.35, -0.45, 0);
-ui.add(calibrateButton.mesh);
-
 const modeBadge = $('mode-badge');
 
 // A phone screen is small, so the same panels that read fine in a headset
@@ -184,18 +174,12 @@ const modeBadge = $('mode-badge');
 // blunter pointer than a controller ray. In 3D mode (no headset) the
 // buttons get bigger to hit and more transparent to see through; full
 // headset presence gets them back at normal size and opacity.
-//
-// Calibrating a gamepad stays available in 3D mode on purpose — someone
-// pairs a controller while still looking at the flat screen, well before
-// putting a headset on, and that same controller is what they'll use once
-// they do. The calibration itself isn't mode-specific: it just confirms a
-// button press reaches `select()`, which is the same code path either way.
 function updateViewMode() {
   const inHeadset = renderer.xr.isPresenting;
   modeBadge.hidden = inHeadset;
   const opacity = inHeadset ? 1 : 0.6;
   const scale = inHeadset ? 1 : 1.3;
-  for (const button of [actionButton, leaveButton, calibrateButton]) {
+  for (const button of [actionButton, leaveButton]) {
     button.panel.material.opacity = opacity;
     button.mesh.scale.setScalar(scale);
   }
@@ -265,7 +249,6 @@ function targets() {
   if (keyboard.visible) list.push(keyboard.face.mesh);
   if (actionButton.mesh.visible) list.push(actionButton.mesh);
   if (leaveButton.mesh.visible) list.push(leaveButton.mesh);
-  if (calibrateButton.mesh.visible) list.push(calibrateButton.mesh);
   list.push(...seating.voteTargets);
   return list;
 }
@@ -411,7 +394,6 @@ function renderWorld() {
     visible: canDeal && !keyboard.visible,
   });
   leaveButton.set('Leave the table');
-  calibrateButton.set('Calibrate');
 
   // Open the keyboard when the table is waiting on you, and — importantly —
   // only when the *reason* changes. Re-showing it on every state message would
@@ -608,6 +590,34 @@ const saved = session.read();
 if (saved.name) $('entry-name').value = saved.name;
 const codeFromUrl = new URL(location.href).searchParams.get('room');
 if (codeFromUrl) $('entry-code').value = codeFromUrl.toUpperCase();
+
+// -------------------------------------------------------------- hud menu
+
+// A flat HTML popover rather than another floating panel in the room: it
+// only needs to reach the player before or between rounds, never mid-game,
+// so it does not need to compete with the villa for space the way a
+// world-space button would.
+const hudDots = $('hud-dots');
+const hudMenuList = $('hud-menu-list');
+
+function closeHudMenu() {
+  hudMenuList.hidden = true;
+  hudDots.setAttribute('aria-expanded', 'false');
+}
+
+hudDots.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = hudMenuList.hidden;
+  hudMenuList.hidden = !open;
+  hudDots.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', closeHudMenu);
+
+$('menu-calibrate').addEventListener('click', (e) => {
+  e.stopPropagation();
+  closeHudMenu();
+  startGamepadCalibration();
+});
 
 // ---------------------------------------------------------------- WebXR
 
