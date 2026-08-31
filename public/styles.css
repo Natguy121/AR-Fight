@@ -321,6 +321,32 @@ body:not(.force-rotate) #flip-cardboard { display: none; }
 /* Nothing scrolls or rubber-bands while the phone is strapped to a face. */
 body.in-cardboard { touch-action: none; overscroll-behavior: none; }
 
+/* Above everything else on the page, canvas included — a crash while inside
+   the villa has no console to show up in on a phone, and fullscreen hides
+   the browser's own chrome too, so this is the only place left for a real
+   error message to actually reach the person holding the phone. */
+.crash {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  background: #1a0505;
+  color: #ffd6d6;
+  overflow-y: auto;
+}
+.crash-title { margin: 0; font-size: 1.1rem; font-weight: 700; }
+.crash-message {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* The real viewport stayed portrait — rotation lock, most often, or iOS
    ignoring the lock request outright — so rather than leaving two lens
    circles each squeezed into a tall sliver, the canvas is rotated in place

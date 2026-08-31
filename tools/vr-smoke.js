@@ -562,6 +562,47 @@ async function main() {
     await until(async () => !await vr.evaluate(() => window.__vr.cardboard.active), 'viewer mode to end');
     check(true, 'and you can get back out again');
 
+    // ------------------------------------------------ when it actually breaks
+    console.log('\nWhen something actually goes wrong');
+    {
+      // A separate page and context: this one is *supposed* to throw, so its
+      // errors must never land in the shared errors[] the Console section
+      // below checks is empty — that check is what proves everything else in
+      // this run was clean.
+      const crashContext = await browser.newContext({ viewport: { width: 1100, height: 760 } });
+      contexts.push(crashContext);
+      const crashPage = await crashContext.newPage();
+      await crashPage.addInitScript(() => {
+        if (!('DeviceOrientationEvent' in window)) {
+          window.DeviceOrientationEvent = function DeviceOrientationEvent() {};
+        }
+      });
+      await crashPage.goto(`${BASE}/vr.html`, { waitUntil: 'load' });
+      await crashPage.evaluate(() => window.__vr.cardboard.enter());
+
+      // A real exception thrown from inside the render loop, the same way an
+      // actual bug would — not a synthetic DOM error event — to prove the
+      // loop's own try/catch is what's engaging, not just window.onerror.
+      await crashPage.evaluate(() => {
+        window.__vr.cardboard.render = () => { throw new Error('smoke test: intentional crash'); };
+      });
+      await until(
+        () => crashPage.evaluate(() => !document.getElementById('crash').hidden),
+        'the crash overlay to appear',
+      );
+      const crashText = await crashPage.evaluate(() => document.getElementById('crash-message').textContent);
+      check(crashText.includes('smoke test: intentional crash'),
+        'an error inside the render loop reaches the screen instead of failing silently',
+        crashText);
+
+      await crashPage.click('#crash-exit');
+      await until(
+        () => crashPage.evaluate(() => document.getElementById('entry-name') !== null && document.getElementById('crash').hidden),
+        'Exit to reload back to a working page',
+      );
+      check(true, 'and Exit gets you back out rather than stuck on the crash screen');
+    }
+
     // ---------------------------------------------------------- console
     console.log('\nConsole');
     check(errors.length === 0, 'no client-side errors', errors.join('\n        '));

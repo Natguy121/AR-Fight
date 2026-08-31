@@ -28,6 +28,31 @@ const TABLE_Z = -(TABLE.radius + 0.42);
 
 const $ = (id) => document.getElementById(id);
 
+/**
+ * A rendering error inside the villa has nowhere to surface on a phone —
+ * there's no console, and once fullscreen and the render loop are running
+ * the failure mode is silent: the last successfully drawn frame just stays
+ * on screen forever, which reads as "everything is fine but wrong" rather
+ * than "this broke." This puts the actual error on the actual screen
+ * instead, and stops the render loop so it can't spam the same crash every
+ * frame.
+ */
+function crash(message) {
+  // Optional chaining: this can fire before renderer exists at all, if the
+  // error happened during the scene's own synchronous setup.
+  renderer?.setAnimationLoop?.(null);
+  const el = $('crash');
+  el.hidden = false;
+  $('crash-message').textContent = message;
+}
+window.addEventListener('error', (e) => crash(e.error?.stack ?? e.message ?? String(e)));
+window.addEventListener('unhandledrejection', (e) => crash(e.reason?.stack ?? String(e.reason)));
+// A reload is the simplest way out of a crash that's actually reliable
+// regardless of what specifically broke — trying to gracefully unwind
+// fullscreen/cardboard state from inside a page that just threw is exactly
+// the kind of thing likely to throw again.
+$('crash-exit').addEventListener('click', () => location.reload());
+
 // ------------------------------------------------------------------ scene
 
 const scene = new THREE.Scene();
@@ -828,29 +853,37 @@ function updateDwell(hit) {
 }
 
 renderer.setAnimationLoop(() => {
-  let hit = null;
+  // Some browsers quietly stop calling this at all once it throws once,
+  // rather than letting the error bubble to window.onerror — which reads
+  // as "frozen on the last frame that worked," not as a crash. Catching it
+  // here means the crash overlay comes up either way.
+  try {
+    let hit = null;
 
-  if (renderer.xr.isPresenting) {
-    for (const controller of controllers) {
-      if (!controller.visible) continue;
-      hit = pick(rayFromController(controller));
-      if (hit) break;
+    if (renderer.xr.isPresenting) {
+      for (const controller of controllers) {
+        if (!controller.visible) continue;
+        hit = pick(rayFromController(controller));
+        if (hit) break;
+      }
+      applyHover(hit);
+    } else if (cardboard.active) {
+      cardboard.update();
+      hit = pick(cardboard.gazeRay(raycaster));
+      applyHover(hit);
+      updateDwell(hit);
+    } else {
+      if (pointerActive) hit = pick(rayFromPointer());
+      applyHover(hit);
     }
-    applyHover(hit);
-  } else if (cardboard.active) {
-    cardboard.update();
-    hit = pick(cardboard.gazeRay(raycaster));
-    applyHover(hit);
-    updateDwell(hit);
-  } else {
-    if (pointerActive) hit = pick(rayFromPointer());
-    applyHover(hit);
+
+    seating.faceCamera(camera);
+
+    if (cardboard.active) cardboard.render(scene);
+    else renderer.render(scene, camera);
+  } catch (err) {
+    crash(err?.stack ?? String(err));
   }
-
-  seating.faceCamera(camera);
-
-  if (cardboard.active) cardboard.render(scene);
-  else renderer.render(scene, camera);
 });
 
 net.connect();

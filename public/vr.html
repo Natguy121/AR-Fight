@@ -77,6 +77,16 @@
      harder. Sits below Exit in the same seam. -->
 <button id="flip-cardboard" class="btn" type="button">Flip ⟲</button>
 
+<!-- A rendering error inside the villa has nowhere else to surface: the
+     entry overlay is long gone by then, and fullscreen hides everything but
+     the canvas from the browser's own dev tools. Sits above everything else
+     on the page, including the canvas, so it's visible even mid-crash. -->
+<div id="crash" class="crash" hidden>
+  <p class="crash-title">Something went wrong — a screenshot of this helps</p>
+  <pre id="crash-message" class="crash-message"></pre>
+  <button id="crash-exit" class="btn" type="button">Exit</button>
+</div>
+
 <noscript>
   <div class="screen"><div class="card"><h1 class="wordmark">Mr.&nbsp;White</h1>
   <p>This game needs JavaScript.</p></div></div>
